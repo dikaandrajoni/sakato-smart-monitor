@@ -16,13 +16,18 @@ home-assistant/config/.storage/
 agent/data/
 capture/
 dataset/
+gallery/
+prototype/gallery/
 *.jpg
 *.mp4
+*.npz
 !docs/**/*.jpg
 !docs/**/*.mp4
 
 # models (diunduh saat setup, bukan di-commit)
 models/
+*.pt
+*.onnx
 
 # os / editor
 .DS_Store

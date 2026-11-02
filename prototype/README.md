@@ -1,75 +1,124 @@
-# Fase 1 — Prototipe Deteksi Orang + Tracking
+# Fase 2 — Face Recognition + Notifikasi Telegram Cerdas
 
-Pipeline sederhana yang jalan di laptop: **baca frame → deteksi orang
-(YOLO11n) → tracking ID stabil (ByteTrack) → event dedup → JSONL**.
+Pipeline Fase 1 (YOLO11n + ByteTrack + event dedup) ditambah:
 
-Nanti Boss tinggal pilih sumber kamera lewat `--source`, tanpa ubah kode.
+1. **Face recognition (InsightFace, model `buffalo_l`)** — tiap `person_entered`
+   di-crop wajahnya dan dicocokkan ke galeri. Semua inference lokal (CPU).
+2. **Notifikasi Telegram cerdas (python-telegram-bot v21)** — orang tak dikenal
+   → foto + caption (waktu, kamera, track ID, kemiripan); orang dikenal →
+   dicatat saja. Anti-spam: cooldown per track ID + perintah `/mute`.
+3. **Perintah bot dua arah**: `/status`, `/snapshot`, `/arm`, `/disarm`,
+   `/mute <menit>`.
 
-## Instalasi (disarankan venv)
+---
+
+## ⚠️ PENTING: buat bot Telegram BARU
+
+**Token bot di repo lama (2021) SUDAH BOCOR** — ia pernah di-hardcode di repo
+publik. **Jangan pernah pakai lagi.** Revoke di @BotFather, lalu buat baru:
+
+1. Chat ke **@BotFather** di Telegram → `/newbot`
+2. Ikuti langkahnya (nama + username bot) → dapat **token baru**
+3. Cari tahu chat ID kamu: chat ke **@userinfobot** → dapat angka ID
+4. Buat file `.env` di folder `prototype/` (JANGAN di-commit):
 
 ```bash
-cd fase-1-prototype
+TELEGRAM_BOT_TOKEN=isi_token_baru_di_sini
+TELEGRAM_CHAT_ID=isi_angka_chat_id_di_sini
+```
+
+Lalu jalankan dengan `set -a; source .env; set +a` (Linux/macOS) atau isi
+manual sebagai environment variable di Windows, sebelum `python main.py`.
+
+Token HANYA dibaca dari environment. Tidak ada default, tidak ada hardcode.
+Bila kosong, notifier nonaktif dengan peringatan — program tetap jalan.
+
+## Instalasi
+
+```bash
+cd prototype
 python -m venv .venv
-
-# Linux / macOS
-source .venv/bin/activate
-
-# Windows (PowerShell)
-# .venv\Scripts\Activate.ps1
-
+source .venv/bin/activate   # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Saat pertama dijalankan, model `yolo11n.pt` otomatis diunduh (~6 MB).
+Saat pertama dijalankan, model `yolo11n.pt` (~6 MB) dan `buffalo_l`
+(~300 MB) otomatis diunduh. buffalo_l tersimpan di `~/.insightface`.
 
-## Contoh perintah
+## Daftarkan wajah (enroll)
 
 ```bash
-# Kamera laptop
-python main.py --source 0
-
-# Kamera USB (coba 1, 2, ... bila 0 adalah kamera internal)
-python main.py --source 1
-
-# Kamera IP via RTSP (ada reconnect otomatis bila putus)
-python main.py --source rtsp://user:password@192.168.1.10:554/stream1 --no-show
-
-# File video
-python main.py --source rekaman.mp4 --log kejadian.jsonl
-
-# Threshold confidence lebih ketat + tanpa GUI (headless / server)
-python main.py --source 0 --conf 0.6 --no-show
+python enroll.py --source 0 --name dika --shots 20
 ```
 
-Tekan `q` pada jendela video untuk keluar.
+- `--source`: `0` (kamera laptop), `1` (USB), `rtsp://...`, atau file video
+- `--name`: nama orang (jadi folder `gallery/dika/`)
+- `--shots`: jumlah foto (default 20)
+
+Tips: ambil dari beberapa sudut & ekspresi, pencahayaan cukup. Ulangi perintah
+untuk tiap orang. Hasil: `gallery/<nama>/shot_000.jpg`, dst.
+
+## Menjalankan monitor
+
+```bash
+# Tanpa Telegram (mode uji)
+python main.py --source 0 --gallery gallery/
+
+# Lengkap: Telegram aktif
+python main.py --source 0 --gallery gallery/ --telegram --camera-name teras_depan
+
+# Headless + hanya notifikasi orang tak dikenal (default)
+python main.py --source 0 --gallery gallery/ --telegram --no-show
+
+# Termasuk notifikasi orang yang dikenal
+python main.py --source 0 --gallery gallery/ --telegram --notify-known
+```
+
+Flag tambahan: `--face-threshold` (default 0.6 — naikkan bila sering salah
+mengenali), `--notify-cooldown` detik (default 300), `--conf`, `--log`.
+
+Tanpa folder `gallery/` yang valid, semua orang dianggap Unknown dan
+face recognition dimatikan otomatis.
+
+## Perintah Telegram
+
+| Perintah | Fungsi |
+|---|---|
+| `/start` | daftar perintah |
+| `/status` | status notifikasi, event hari ini, kamera |
+| `/snapshot` | kirim foto frame terakhir |
+| `/arm` | aktifkan notifikasi |
+| `/disarm` | matikan notifikasi |
+| `/mute <menit>` | bisukan sementara, mis. `/mute 30` |
 
 ## Event log (JSONL)
 
-Setiap baris satu event JSON:
+Sama seperti Fase 1, plus info wajah di console:
 
-```json
-{"ts": "2026-11-02T09:30:12.123456+00:00", "type": "person_entered", "track_id": 3}
-{"ts": "2026-11-02T09:31:05.654321+00:00", "type": "person_left", "track_id": 3, "missing_frames": 30}
+```
+[event] person_entered track_id=3
+[face] track #3 -> dika (0.87)
 ```
 
-- `person_entered` — emit **sekali** saat ID orang baru pertama terlihat.
-- `person_left` — emit **sekali** saat ID hilang selama N frame
-  berturut-turut (default 30, ubah via `--leave-after`).
-- Ada cooldown antar event sejenis agar log tidak spam.
+## Keterbatasan Fase 2
 
-## Keterbatasan prototipe
+- **Anti-spoofing lemah**: `buffalo_l` tidak punya liveness detection yang kuat.
+  Foto cetak / layar HP wajah terdaftar DAPAT menipu sistem. Jangan jadikan
+  satu-satunya kunci akses (mis. buka pintu) tanpa faktor kedua.
+- Threshold 0.6 adalah titik awal — sesuaikan dengan kondisi pencahayaan rumah.
+- ByteTrack kadang ganti ID bila orang hilang lama dari frame (ID switch);
+  wajah dikenali ulang sebagai track baru.
+- InsightFace di CPU: tambah ~50–150 ms per wajah. Di laptop kentang,
+  pertimbangkan `--conf` lebih tinggi agar crop wajah lebih sedikit.
+- Notifikasi Unknown memakai crop wajah dari bbox YOLO — bila wajah kecil /
+  blur, kemiripan rendah dan wajar jadi Unknown.
+- Belum ada deskripsi kejadian Bahasa Indonesia (itu Fase 3/4 dengan VLM).
 
-- Hanya mendeteksi kelas `person`; belum ada face recognition,
-  belum ada notifikasi Telegram, belum ada deskripsi kejadian.
-- ByteTrack kadang memberi ID baru bila orang hilang lama dari frame
-  (ID switch) — wajar untuk prototipe.
-- Performa tergantung hardware; YOLO11n ringan, tapi di CPU lama
-  frame rate bisa rendah. Bila ada GPU NVIDIA, otomatis dipakai (cuda).
-- Belum diuji dengan kamera fisik (hanya video sintetis di VM).
+## Rencana Fase 3
 
-## Langkah Fase 2 berikutnya
-
-1. Face recognition (InsightFace) di atas crop wajah tiap track ID.
-2. Verifikasi VLM lokal untuk deskripsi kejadian Bahasa Indonesia.
-3. Notifikasi Telegram cerdas (foto + deskripsi, anti-spam, perintah dua arah).
-4. Secret via environment variable (`.env`), bukan hardcode.
+1. Integrasi **Home Assistant via MQTT** (gantikan notifier langsung):
+   Frigate-style event topic, automasi lampu/sirene.
+2. **VLM lokal** (Moondream2 / Qwen2.5-VL via Ollama) untuk deskripsi kejadian
+   Bahasa Indonesia sebagai verifikator lapis kedua.
+3. Event store SQLite + riwayat klip per event.
+4. Mode multi-kamera (`--camera-name` per sumber).
