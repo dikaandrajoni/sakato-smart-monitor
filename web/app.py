@@ -1,4 +1,4 @@
-"""Web UI konfigurasi Sakato Smart Monitor.
+"""Web UI konfigurasi Sakato Smart Monitor (multi-kamera + snapshot).
 
 Jalankan:
     cd web
@@ -8,60 +8,109 @@ Jalankan:
 
 Buka: http://localhost:8080
 
-Fitur: pilih sumber kamera (laptop/USB/RTSP CCTV/file), atur nama kamera,
-telegram/mqtt/describe, start/stop pipeline, lihat event terakhir & log.
+Fitur: kelola banyak kamera (laptop/USB/RTSP CCTV/file), tab per kamera di
+dashboard, snapshot frame terakhir auto-refresh, start/stop per kamera atau
+sekaligus, event terfilter per kamera.
+
+Config v2 (web/config.json):
+    {"cameras": [{"id": "teras_depan", "camera_type": "laptop", ...}],
+     "active": "teras_depan"}
+Migrasi otomatis dari format v1 (single kamera) saat dibaca.
 
 PERINGATAN: tanpa autentikasi. Hanya untuk LAN rumah — JANGAN expose ke internet.
 """
 
 import json
 import os
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
 from subprocess import Popen, STDOUT, TimeoutExpired
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, send_file
 
 WEB_DIR = Path(__file__).resolve().parent
 ROOT = WEB_DIR.parent
 CONFIG_PATH = WEB_DIR / "config.json"
-LOG_PATH = WEB_DIR / "pipeline.log"
-EVENTS_PATH = ROOT / "prototype" / "events.jsonl"
+SNAPSHOT_DIR = WEB_DIR / "snapshots"
+LOGS_DIR = WEB_DIR / "logs"
 
-DEFAULT_CONFIG = {
+CAMERA_TYPES = ("laptop", "usb", "rtsp", "file")
+BOOL_KEYS = ("telegram", "mqtt", "describe", "no_show")
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+MAX_CAM_WARN = 4  # tampilkan peringatan bila >= ini kamera aktif bersamaan
+
+DEFAULT_CAMERA = {
+    "id": "default",
     "camera_type": "laptop",  # laptop | usb | rtsp | file
     "usb_index": "1",
     "rtsp_url": "",
     "video_file": "",
-    "camera_name": "teras_depan",
+    "camera_name": "Kamera",
     "gallery": "gallery/",
     "telegram": False,
     "mqtt": False,
     "describe": False,
-    "no_show": False,
+    "no_show": True,
 }
 
-CAMERA_TYPES = ("laptop", "usb", "rtsp", "file")
-BOOL_KEYS = ("telegram", "mqtt", "describe", "no_show")
-
-_proc = None
+_procs = {}  # camera_id -> Popen
 _lock = threading.Lock()
 
 
 # ---------- config ----------
 
+def blank_camera(cid):
+    cam = dict(DEFAULT_CAMERA)
+    cam["id"] = cid
+    return cam
+
+
 def load_config():
-    cfg = dict(DEFAULT_CONFIG)
+    """Kembalikan {'cameras': [...], 'active': id}.
+
+    Migrasi otomatis: config v1 (single, camera_type di top-level)
+    dikonversi menjadi satu kamera ber-id 'default'.
+    """
+    fallback = {"cameras": [blank_camera("default")], "active": "default"}
     try:
-        if CONFIG_PATH.exists():
-            saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            for k in DEFAULT_CONFIG:
-                if k in saved:
-                    cfg[k] = saved[k]
+        if not CONFIG_PATH.exists():
+            return fallback
+        saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        pass
-    return cfg
+        return fallback
+    if not isinstance(saved, dict):
+        return fallback
+    # --- migrasi v1 -> v2 ---
+    if "cameras" not in saved and "camera_type" in saved:
+        cam = blank_camera("default")
+        for k in cam:
+            if k in saved and k != "id":
+                cam[k] = saved[k]
+        return {"cameras": [cam], "active": "default"}
+    # --- v2 ---
+    if isinstance(saved.get("cameras"), list):
+        cams, seen = [], set()
+        for raw in saved["cameras"]:
+            if not isinstance(raw, dict):
+                continue
+            cid = str(raw.get("id", "")).strip()
+            if not ID_RE.match(cid) or cid in seen:
+                continue
+            cam = blank_camera(cid)
+            for k in cam:
+                if k in raw and k != "id":
+                    cam[k] = raw[k]
+            seen.add(cid)
+            cams.append(cam)
+        if not cams:
+            return fallback
+        active = saved.get("active")
+        if active not in seen:
+            active = cams[0]["id"]
+        return {"cameras": cams, "active": active}
+    return fallback
 
 
 def save_config(cfg):
@@ -69,28 +118,41 @@ def save_config(cfg):
                            encoding="utf-8")
 
 
-def resolve_source(cfg):
+def get_camera(cfg, cid):
+    for cam in cfg["cameras"]:
+        if cam["id"] == cid:
+            return cam
+    return None
+
+
+def resolve_source(cam):
     """Kembalikan string --source untuk prototype/main.py."""
-    ct = cfg.get("camera_type", "laptop")
+    ct = cam.get("camera_type", "laptop")
     if ct == "usb":
-        return str(cfg.get("usb_index", "1")).strip() or "1"
+        return str(cam.get("usb_index", "1")).strip() or "1"
     if ct == "rtsp":
-        return str(cfg.get("rtsp_url", "")).strip()
+        return str(cam.get("rtsp_url", "")).strip()
     if ct == "file":
-        return str(cfg.get("video_file", "")).strip()
+        return str(cam.get("video_file", "")).strip()
     return "0"
 
 
-def validate_config(data):
-    """Kembalikan (config_bersih, errors)."""
+def validate_camera(data, is_new=False):
+    """Validasi satu kamera. Kembalikan (cam_bersih, errors)."""
     errors = []
-    cfg = dict(DEFAULT_CONFIG)
+    cam = blank_camera("tmp")
+    if is_new:
+        cid = str(data.get("id", "")).strip()
+        if not ID_RE.match(cid):
+            errors.append(
+                "id kamera wajib diisi: huruf/angka/_/- saja (maks 40).")
+        cam["id"] = cid or "tmp"
 
     ct = str(data.get("camera_type", "laptop")).strip()
     if ct not in CAMERA_TYPES:
         errors.append(f"camera_type tidak valid: {ct!r}")
         ct = "laptop"
-    cfg["camera_type"] = ct
+    cam["camera_type"] = ct
 
     if ct == "rtsp":
         url = str(data.get("rtsp_url", "")).strip()
@@ -98,33 +160,45 @@ def validate_config(data):
             errors.append("URL RTSP wajib diisi untuk tipe kamera RTSP.")
         elif not url.startswith("rtsp://"):
             errors.append("URL RTSP harus diawali 'rtsp://'.")
-        cfg["rtsp_url"] = url
+        cam["rtsp_url"] = url
     elif ct == "usb":
         idx = str(data.get("usb_index", "")).strip()
         if not idx.isdigit():
             errors.append("Index USB harus angka (contoh: 1).")
-        cfg["usb_index"] = idx or "1"
+        cam["usb_index"] = idx or "1"
     elif ct == "file":
         vf = str(data.get("video_file", "")).strip()
         if not vf:
             errors.append("Path file video wajib diisi untuk tipe kamera file.")
-        cfg["video_file"] = vf
+        cam["video_file"] = vf
 
     name = str(data.get("camera_name", "")).strip()
     if not name:
         errors.append("Nama kamera wajib diisi.")
-    cfg["camera_name"] = name or DEFAULT_CONFIG["camera_name"]
+    cam["camera_name"] = name or DEFAULT_CAMERA["camera_name"]
 
     gal = str(data.get("gallery", "")).strip()
-    cfg["gallery"] = gal or DEFAULT_CONFIG["gallery"]
+    cam["gallery"] = gal or DEFAULT_CAMERA["gallery"]
 
     for k in BOOL_KEYS:
-        cfg[k] = bool(data.get(k, False))
+        cam[k] = bool(data.get(k, False))
 
-    return cfg, errors
+    return cam, errors
 
 
-# ---------- pipeline ----------
+# ---------- pipeline (multi-kamera) ----------
+
+def snapshot_path(cid):
+    return str(SNAPSHOT_DIR / f"{cid}.jpg")
+
+
+def event_log_path(cid):
+    return str(LOGS_DIR / f"{cid}.jsonl")
+
+
+def cam_log_path(cid):
+    return str(LOGS_DIR / f"{cid}.log")
+
 
 def venv_python():
     proto = ROOT / "prototype"
@@ -133,61 +207,81 @@ def venv_python():
     return str(proto / ".venv" / "bin" / "python")
 
 
-def build_args(cfg):
+def build_args(cam):
     args = [venv_python(), "main.py",
-            "--source", resolve_source(cfg),
-            "--camera-name", cfg["camera_name"],
-            "--gallery", cfg["gallery"]]
+            "--source", resolve_source(cam),
+            "--camera-name", cam["camera_name"],
+            "--gallery", cam["gallery"],
+            "--snapshot-file", snapshot_path(cam["id"]),
+            "--log", event_log_path(cam["id"])]
     for key in BOOL_KEYS:
-        if cfg.get(key):
+        if cam.get(key):
             args.append("--" + key.replace("_", "-"))
     return args
 
 
-def pipeline_running():
-    return _proc is not None and _proc.poll() is None
+def camera_running(cid):
+    p = _procs.get(cid)
+    return p is not None and p.poll() is None
 
 
-def start_pipeline(cfg):
-    """Jalankan prototype/main.py sebagai subprocess. Kembalikan (ok, pesan)."""
-    global _proc
+def running_count():
+    return sum(1 for cid in _procs if camera_running(cid))
+
+
+def start_camera(cam):
+    """Jalankan pipeline untuk satu kamera. Kembalikan (ok, pesan)."""
+    cid = cam["id"]
     with _lock:
-        if pipeline_running():
-            return False, "pipeline sudah berjalan"
-        logf = open(LOG_PATH, "ab")
+        if camera_running(cid):
+            return False, f"kamera {cid} sudah berjalan"
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        n = running_count()
+        warn = (f" ⚠️ peringatan: {n + 1} kamera aktif bersamaan — "
+                f"beban CPU tinggi!" if n >= MAX_CAM_WARN else "")
+        logf = open(cam_log_path(cid), "ab")
         try:
-            logf.write(f"\n===== start {datetime.now().isoformat()} "
-                       f"source={resolve_source(cfg)} =====\n".encode())
+            logf.write(f"\n===== start {datetime.now().isoformat()} id={cid} "
+                       f"source={resolve_source(cam)} =====\n".encode())
             logf.flush()
-            _proc = Popen(build_args(cfg), cwd=str(ROOT / "prototype"),
-                          stdout=logf, stderr=STDOUT)
+            _procs[cid] = Popen(build_args(cam), cwd=str(ROOT / "prototype"),
+                                stdout=logf, stderr=STDOUT)
         except OSError as e:
             logf.close()
-            return False, f"gagal start: {e}"
-        return True, f"pipeline dimulai (pid {_proc.pid})"
+            return False, f"gagal start kamera {cid}: {e}"
+        return True, f"kamera {cid} dimulai (pid {_procs[cid].pid})." + warn
 
 
-def stop_pipeline():
-    """Hentikan pipeline. Kembalikan (ok, pesan)."""
-    global _proc
+def stop_camera(cid):
+    """Hentikan pipeline satu kamera. Kembalikan (ok, pesan)."""
     with _lock:
-        if not pipeline_running():
-            return False, "pipeline tidak sedang berjalan"
-        _proc.terminate()
+        if not camera_running(cid):
+            return False, f"kamera {cid} tidak sedang berjalan"
+        p = _procs[cid]
+        p.terminate()
         try:
-            _proc.wait(timeout=10)
-            msg = "pipeline dihentikan"
+            p.wait(timeout=10)
+            msg = f"kamera {cid} dihentikan"
         except TimeoutExpired:
-            _proc.kill()
-            msg = "pipeline di-kill paksa"
-        _proc = None
+            p.kill()
+            msg = f"kamera {cid} di-kill paksa"
+        _procs.pop(cid, None)
         return True, msg
 
 
-def tail_events(n=10):
+def stop_all():
+    msgs = []
+    for cid in list(_procs.keys()):
+        ok, msg = stop_camera(cid)
+        msgs.append(msg)
+    return msgs or ["tidak ada kamera yang berjalan"]
+
+
+def tail_events(path, n=10):
     events = []
     try:
-        lines = EVENTS_PATH.read_text(encoding="utf-8").splitlines()
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
     except OSError:
         return events
     for line in lines[-n:]:
@@ -201,13 +295,26 @@ def tail_events(n=10):
     return list(reversed(events))
 
 
-def tail_log(n=50):
+def tail_log(path, n=50):
     try:
-        lines = LOG_PATH.read_text(encoding="utf-8",
-                                   errors="replace").splitlines()
+        lines = Path(path).read_text(encoding="utf-8",
+                                     errors="replace").splitlines()
     except OSError:
         return []
     return lines[-n:]
+
+
+def camera_status(cam):
+    cid = cam["id"]
+    return {
+        "id": cid,
+        "camera_name": cam["camera_name"],
+        "camera_type": cam["camera_type"],
+        "running": camera_running(cid),
+        "config": cam,
+        "events": tail_events(event_log_path(cid), 10),
+        "log_tail": tail_log(cam_log_path(cid), 50),
+    }
 
 
 # ---------- app ----------
@@ -223,32 +330,154 @@ def create_app():
     def config_page():
         return render_template_string(CONFIG_HTML)
 
+    @app.get("/snapshot/<cid>")
+    def snapshot(cid):
+        if not ID_RE.match(cid):
+            return "id kamera tidak valid", 400
+        p = SNAPSHOT_DIR / f"{cid}.jpg"
+        if not p.exists():
+            return "belum ada snapshot — jalankan pipeline kamera ini dulu", 404
+        return send_file(p, mimetype="image/jpeg")
+
     @app.get("/api/status")
     def api_status():
+        cfg = load_config()
+        cams = [camera_status(c) for c in cfg["cameras"]]
+        active = get_camera(cfg, cfg["active"])
         return jsonify({
-            "running": pipeline_running(),
-            "config": load_config(),
-            "events": tail_events(10),
-            "log_tail": tail_log(50),
+            "cameras": cams,
+            "active": cfg["active"],
+            "running_count": sum(1 for c in cams if c["running"]),
+            # kompatibilitas: endpoint lama membaca kamera aktif
+            "running": active is not None and camera_running(active["id"]),
+            "config": active or {},
         })
 
-    @app.post("/api/config")
-    def api_config():
+    # --- kelola kamera ---
+    @app.get("/api/cameras")
+    def api_cameras_list():
+        return jsonify(load_config())
+
+    @app.post("/api/cameras")
+    def api_cameras_add():
         data = request.get_json(force=True, silent=True) or {}
-        cfg, errors = validate_config(data)
+        cfg = load_config()
+        if get_camera(cfg, str(data.get("id", "")).strip()):
+            return jsonify({"ok": False,
+                            "errors": ["id kamera sudah dipakai."]}), 400
+        cam, errors = validate_camera(data, is_new=True)
         if errors:
             return jsonify({"ok": False, "errors": errors}), 400
+        cfg["cameras"].append(cam)
         save_config(cfg)
-        return jsonify({"ok": True, "config": cfg})
+        return jsonify({"ok": True, "camera": cam})
+
+    @app.put("/api/cameras/<cid>")
+    def api_cameras_update(cid):
+        if not ID_RE.match(cid):
+            return jsonify({"ok": False,
+                            "errors": ["id kamera tidak valid."]}), 400
+        data = request.get_json(force=True, silent=True) or {}
+        cfg = load_config()
+        cam = get_camera(cfg, cid)
+        if cam is None:
+            return jsonify({"ok": False,
+                            "errors": ["kamera tidak ditemukan."]}), 404
+        new, errors = validate_camera(data, is_new=False)
+        if errors:
+            return jsonify({"ok": False, "errors": errors}), 400
+        new["id"] = cid  # id tidak bisa diubah
+        cfg["cameras"] = [new if c["id"] == cid else c
+                          for c in cfg["cameras"]]
+        save_config(cfg)
+        return jsonify({"ok": True, "camera": new})
+
+    @app.delete("/api/cameras/<cid>")
+    def api_cameras_delete(cid):
+        cfg = load_config()
+        if get_camera(cfg, cid) is None:
+            return jsonify({"ok": False,
+                            "errors": ["kamera tidak ditemukan."]}), 404
+        if camera_running(cid):
+            stop_camera(cid)
+        cfg["cameras"] = [c for c in cfg["cameras"] if c["id"] != cid]
+        if not cfg["cameras"]:
+            cfg["cameras"] = [blank_camera("default")]
+        if cfg["active"] == cid:
+            cfg["active"] = cfg["cameras"][0]["id"]
+        save_config(cfg)
+        return jsonify({"ok": True})
+
+    @app.post("/api/active")
+    def api_set_active():
+        data = request.get_json(force=True, silent=True) or {}
+        cfg = load_config()
+        cid = str(data.get("id", "")).strip()
+        if get_camera(cfg, cid) is None:
+            return jsonify({"ok": False,
+                            "errors": ["kamera tidak ditemukan."]}), 404
+        cfg["active"] = cid
+        save_config(cfg)
+        return jsonify({"ok": True, "active": cid})
+
+    # --- kontrol pipeline ---
+    @app.post("/api/cameras/<cid>/start")
+    def api_camera_start(cid):
+        cfg = load_config()
+        cam = get_camera(cfg, cid)
+        if cam is None:
+            return jsonify({"ok": False, "message": "kamera tidak ditemukan."}), 404
+        ok, msg = start_camera(cam)
+        return jsonify({"ok": ok, "message": msg}), 200 if ok else 409
+
+    @app.post("/api/cameras/<cid>/stop")
+    def api_camera_stop(cid):
+        cfg = load_config()
+        if get_camera(cfg, cid) is None:
+            return jsonify({"ok": False, "message": "kamera tidak ditemukan."}), 404
+        ok, msg = stop_camera(cid)
+        return jsonify({"ok": ok, "message": msg}), 200 if ok else 409
+
+    @app.post("/api/start-all")
+    def api_start_all():
+        cfg = load_config()
+        results = []
+        for cam in cfg["cameras"]:
+            ok, msg = start_camera(cam)
+            results.append({"id": cam["id"], "ok": ok, "message": msg})
+        return jsonify({"ok": True, "results": results})
+
+    @app.post("/api/stop-all")
+    def api_stop_all():
+        return jsonify({"ok": True, "messages": stop_all()})
+
+    # --- endpoint lama: operasikan kamera aktif ---
+    @app.post("/api/config")
+    def api_config_legacy():
+        data = request.get_json(force=True, silent=True) or {}
+        cfg = load_config()
+        active = get_camera(cfg, cfg["active"]) or cfg["cameras"][0]
+        new, errors = validate_camera(data, is_new=False)
+        if errors:
+            return jsonify({"ok": False, "errors": errors}), 400
+        new["id"] = active["id"]
+        cfg["cameras"] = [new if c["id"] == active["id"] else c
+                          for c in cfg["cameras"]]
+        save_config(cfg)
+        return jsonify({"ok": True, "config": new})
 
     @app.post("/api/start")
-    def api_start():
-        ok, msg = start_pipeline(load_config())
+    def api_start_legacy():
+        cfg = load_config()
+        cam = get_camera(cfg, cfg["active"]) or cfg["cameras"][0]
+        ok, msg = start_camera(cam)
         return jsonify({"ok": ok, "message": msg}), 200 if ok else 409
 
     @app.post("/api/stop")
-    def api_stop():
-        ok, msg = stop_pipeline()
+    def api_stop_legacy():
+        cfg = load_config()
+        cam = get_camera(cfg, cfg["active"]) or cfg["cameras"][0]
+        ok, msg = stop_camera(cam["id"])
         return jsonify({"ok": ok, "message": msg}), 200 if ok else 409
 
     return app
@@ -259,18 +488,24 @@ app = create_app()
 # ---------- templates ----------
 
 BASE_CSS = """
-body{font-family:system-ui,sans-serif;max-width:900px;margin:0 auto;padding:16px;background:#111;color:#eee}
+body{font-family:system-ui,sans-serif;max-width:1000px;margin:0 auto;padding:16px;background:#111;color:#eee}
 nav{margin-bottom:16px}a{color:#7fd4ff;margin-right:12px}
 .card{background:#1c1c1c;border:1px solid #333;border-radius:8px;padding:16px;margin-bottom:16px}
 .badge{display:inline-block;padding:4px 12px;border-radius:12px;font-weight:bold}
 .on{background:#14532d;color:#86efac}.off{background:#3f3f3f;color:#ccc}
 button{padding:8px 16px;margin:4px;border-radius:6px;border:0;cursor:pointer;font-size:14px}
-.start{background:#16a34a;color:#fff}.stop{background:#dc2626;color:#fff}.save{background:#2563eb;color:#fff}
+.start{background:#16a34a;color:#fff}.stop{background:#dc2626;color:#fff}
+.save{background:#2563eb;color:#fff}.del{background:#7f1d1d;color:#fff}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{border-bottom:1px solid #333;padding:6px;text-align:left}
-pre{background:#000;padding:12px;border-radius:6px;max-height:300px;overflow:auto;font-size:12px;white-space:pre-wrap}
+pre{background:#000;padding:12px;border-radius:6px;max-height:260px;overflow:auto;font-size:12px;white-space:pre-wrap}
 label{display:block;margin:10px 0 4px}input,select{padding:8px;width:100%;max-width:420px;background:#222;color:#eee;border:1px solid #444;border-radius:6px}
 input[type=checkbox]{width:auto;transform:scale(1.3);margin-right:8px}
+.tabs{margin-bottom:12px}.tab{padding:8px 16px;margin:2px;border-radius:6px 6px 0 0;background:#222;color:#aaa;border:1px solid #333;border-bottom:0;cursor:pointer}
+.tab.active{background:#1c1c1c;color:#fff;font-weight:bold}
+.tab .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot.on{background:#4ade80}.dot.off{background:#666}
+img.snap{width:100%;max-width:640px;border-radius:6px;border:1px solid #333;background:#000;min-height:120px}
 .cond{display:none}.err{color:#f87171}.ok{color:#86efac}
 """
 
@@ -281,35 +516,61 @@ DASHBOARD_HTML = """<!doctype html><html lang="id"><head><meta charset="utf-8">
 <nav><a href="/">Dashboard</a><a href="/config">Konfigurasi</a></nav>
 <h1>Sakato Smart Monitor</h1>
 <div class="card">
-  <span id="badge" class="badge off">memuat...</span>
-  <span id="src" style="margin-left:12px;color:#aaa"></span>
-  <div style="margin-top:12px">
-    <button class="start" onclick="act('start')">▶ Start</button>
-    <button class="stop" onclick="act('stop')">⏹ Stop</button>
-  </div>
+  <button class="start" onclick="actAll('start-all')">▶ Start semua</button>
+  <button class="stop" onclick="actAll('stop-all')">⏹ Stop semua</button>
+  <span id="count" style="margin-left:12px;color:#aaa"></span>
   <p id="msg"></p>
 </div>
-<div class="card"><h3>10 event terakhir</h3><table>
-<thead><tr><th>Waktu</th><th>Tipe</th><th>Track</th><th>Nama</th></tr></thead>
-<tbody id="events"><tr><td colspan="4">memuat...</td></tr></tbody></table></div>
-<div class="card"><h3>Log pipeline (50 baris terakhir)</h3><pre id="log">memuat...</pre></div>
+<div class="tabs" id="tabs"></div>
+<div class="card" id="panel">
+  <h3 id="camtitle">memuat...</h3>
+  <span id="badge" class="badge off">-</span>
+  <div style="margin:12px 0">
+    <button class="start" onclick="actCam('start')">▶ Start</button>
+    <button class="stop" onclick="actCam('stop')">⏹ Stop</button>
+  </div>
+  <h4>Snapshot terakhir</h4>
+  <img id="snap" class="snap" alt="belum ada snapshot">
+  <h4>10 event terakhir</h4>
+  <table><thead><tr><th>Waktu</th><th>Tipe</th><th>Track</th><th>Nama</th></tr></thead>
+  <tbody id="events"></tbody></table>
+  <h4>Log (50 baris terakhir)</h4><pre id="log"></pre>
+</div>
 <script>
-async function act(a){
-  const r=await fetch('/api/'+a,{method:'POST'});const j=await r.json();
-  document.getElementById('msg').textContent=j.message;
-  document.getElementById('msg').className=j.ok?'ok':'err';refresh();
+let cams=[],active=null,cur=null;
+async function act(a,id){
+  const r=await fetch('/api/cameras/'+id+'/'+a,{method:'POST'});
+  const j=await r.json();showMsg(j.message,j.ok);refresh();
 }
+async function actCam(a){if(cur)act(a,cur);}
+async function actAll(a){
+  const r=await fetch('/api/'+a,{method:'POST'});const j=await r.json();
+  const msgs=(j.results||[]).map(x=>x.id+': '+x.message).concat(j.messages||[]);
+  showMsg(msgs.join(' | '),j.ok);refresh();
+}
+function showMsg(t,ok){const m=document.getElementById('msg');m.textContent=t;m.className=ok?'ok':'err';}
 async function refresh(){
   const r=await fetch('/api/status');const s=await r.json();
+  cams=s.cameras;active=s.active;
+  if(!cams.length){document.getElementById('camtitle').textContent='belum ada kamera';return;}
+  if(!cur||!cams.find(c=>c.id===cur))cur=active;
+  const tabs=document.getElementById('tabs');
+  tabs.innerHTML=cams.map(c=>'<button class="tab'+(c.id===cur?' active':'')+'" onclick="cur=\\''+c.id+'\\';refresh()">'
+    +'<span class="dot '+(c.running?'on':'off')+'"></span>'+c.camera_name+'</button>').join('');
+  const c=cams.find(x=>x.id===cur);
+  document.getElementById('camtitle').textContent='🎥 '+c.camera_name+' ('+c.id+')';
   const b=document.getElementById('badge');
-  b.textContent=s.running?'BERJALAN':'BERHENTI';
-  b.className='badge '+(s.running?'on':'off');
-  document.getElementById('src').textContent='sumber: '+s.config.camera_type+' | kamera: '+s.config.camera_name;
+  b.textContent=c.running?'BERJALAN':'BERHENTI';b.className='badge '+(c.running?'on':'off');
+  document.getElementById('count').textContent=s.running_count+' kamera berjalan';
+  const img=document.getElementById('snap');
+  img.src='/snapshot/'+c.id+'?t='+Date.now();
+  img.onerror=()=>{img.removeAttribute('src');};
   const tb=document.getElementById('events');
-  tb.innerHTML=s.events.length?s.events.map(e=>'<tr><td>'+(e.ts||'-')+'</td><td>'+(e.type||'-')+'</td><td>'+(e.track_id??'-')+'</td><td>'+(e.name||'-')+'</td></tr>').join(''):'<tr><td colspan="4">belum ada event</td></tr>';
-  document.getElementById('log').textContent=s.log_tail.join('\\n')||'(log kosong)';
+  tb.innerHTML=c.events.length?c.events.map(e=>'<tr><td>'+(e.ts||'-')+'</td><td>'+(e.type||'-')+'</td><td>'+(e.track_id??'-')+'</td><td>'+(e.name||'-')+'</td></tr>').join(''):'<tr><td colspan="4">belum ada event</td></tr>';
+  document.getElementById('log').textContent=c.log_tail.join('\\n')||'(log kosong)';
 }
-setInterval(refresh,5000);refresh();
+function tickSnap(){if(cur){const img=document.getElementById('snap');img.src='/snapshot/'+cur+'?t='+Date.now();}}
+setInterval(refresh,5000);setInterval(tickSnap,3000);refresh();
 </script></body></html>"""
 
 CONFIG_HTML = """<!doctype html><html lang="id"><head><meta charset="utf-8">
@@ -317,8 +578,12 @@ CONFIG_HTML = """<!doctype html><html lang="id"><head><meta charset="utf-8">
 <title>Konfigurasi — Sakato Smart Monitor</title><style>""" + BASE_CSS + """</style></head>
 <body>
 <nav><a href="/">Dashboard</a><a href="/config">Konfigurasi</a></nav>
-<h1>Konfigurasi</h1>
-<div class="card">
+<h1>Konfigurasi kamera</h1>
+<div class="card"><h3>Daftar kamera</h3><table>
+<thead><tr><th>ID</th><th>Nama</th><th>Sumber</th><th>Aksi</th></tr></thead>
+<tbody id="camlist"></tbody></table></div>
+<div class="card"><h3 id="formtitle">Tambah kamera</h3>
+<label>ID kamera (huruf/angka/_/-, maks 40)</label><input id="cid" placeholder="teras_belakang">
 <label>Sumber kamera</label>
 <select id="camera_type">
   <option value="laptop">💻 Laptop (kamera internal)</option>
@@ -332,28 +597,32 @@ CONFIG_HTML = """<!doctype html><html lang="id"><head><meta charset="utf-8">
 <input id="rtsp_url" placeholder="rtsp://user:pass@192.168.1.10:554/stream1"></div>
 <div id="c-file" class="cond"><label>Path file video</label>
 <input id="video_file" placeholder="/home/dika/video.mp4"></div>
-<label>Nama kamera</label><input id="camera_name">
+<label>Nama kamera (tampil di dashboard)</label><input id="camera_name">
 <label>Folder galeri wajah</label><input id="gallery">
 <label><input type="checkbox" id="telegram"> Notifikasi Telegram</label>
 <label><input type="checkbox" id="mqtt"> Publisher MQTT</label>
 <label><input type="checkbox" id="describe"> Deskripsi VLM (butuh Ollama)</label>
-<label><input type="checkbox" id="no_show"> Tanpa jendela GUI (headless)</label>
-<div style="margin-top:16px"><button class="save" onclick="save()">💾 Simpan</button></div>
+<label><input type="checkbox" id="no_show" checked> Tanpa jendela GUI (headless)</label>
+<div style="margin-top:16px">
+<button class="save" id="btnsave" onclick="save()">💾 Tambah</button>
+<button onclick="resetForm()">Batal</button>
+</div>
 <p id="msg"></p>
 <p style="color:#aaa;font-size:13px">Config tersimpan di <code>web/config.json</code>
-(berisi kredensial RTSP — jangan di-commit, sudah di-.gitignore).</p>
+(berisi kredensial RTSP — jangan di-commit, sudah di-.gitignore).
+Maksimal wajar 4 kamera aktif bersamaan (beban CPU).</p>
 </div>
 <script>
-let cfg={};
+let editId=null;
+const F=['usb_index','rtsp_url','video_file','camera_name','gallery'];
+const B=['telegram','mqtt','describe','no_show'];
 async function load(){
-  const r=await fetch('/api/status');const s=await r.json();cfg=s.config;fill();
-}
-  document.getElementById('camera_type').value=cfg.camera_type||'laptop';
-  for(const k of ['usb_index','rtsp_url','video_file','camera_name','gallery'])
-    document.getElementById(k).value=cfg[k]||'';
-  for(const k of ['telegram','mqtt','describe','no_show'])
-    document.getElementById(k).checked=!!cfg[k];
-  toggle();
+  const r=await fetch('/api/cameras');const s=await r.json();
+  const tb=document.getElementById('camlist');
+  tb.innerHTML=s.cameras.map(c=>'<tr><td><code>'+c.id+'</code>'+(c.id===s.active?' ⭐':'')+'</td><td>'+c.camera_name+'</td><td>'+c.camera_type+'</td>'
+    +'<td><button onclick="edit(\\''+c.id+'\\')">✏️</button>'
+    +'<button class="del" onclick="del(\\''+c.id+'\\')">🗑</button>'
+    +'<button onclick="setActive(\\''+c.id+'\\')">⭐ aktif</button></td></tr>').join('');
 }
 function toggle(){
   const t=document.getElementById('camera_type').value;
@@ -362,19 +631,48 @@ function toggle(){
   document.getElementById('c-file').style.display=t==='file'?'block':'none';
 }
 document.getElementById('camera_type').addEventListener('change',toggle);
+function resetForm(){
+  editId=null;document.getElementById('formtitle').textContent='Tambah kamera';
+  document.getElementById('btnsave').textContent='💾 Tambah';
+  document.getElementById('cid').disabled=false;document.getElementById('cid').value='';
+  document.getElementById('camera_type').value='laptop';
+  for(const k of F)document.getElementById(k).value=(k==='gallery'?'gallery/':'');
+  for(const k of B)document.getElementById(k).checked=(k==='no_show');
+  document.getElementById('msg').textContent='';toggle();
+}
+async function edit(id){
+  const r=await fetch('/api/cameras');const s=await r.json();
+  const c=s.cameras.find(x=>x.id===id);if(!c)return;
+  editId=id;document.getElementById('formtitle').textContent='Ubah kamera '+id;
+  document.getElementById('btnsave').textContent='💾 Simpan';
+  document.getElementById('cid').value=id;document.getElementById('cid').disabled=true;
+  document.getElementById('camera_type').value=c.camera_type;
+  for(const k of F)document.getElementById(k).value=c[k]||'';
+  for(const k of B)document.getElementById(k).checked=!!c[k];
+  toggle();window.scrollTo(0,document.body.scrollHeight);
+}
+async function del(id){
+  if(!confirm('Hapus kamera '+id+'?'))return;
+  const r=await fetch('/api/cameras/'+id,{method:'DELETE'});const j=await r.json();
+  showMsg(j.ok?'✅ dihapus':'❌ gagal',j.ok);load();
+}
+async function setActive(id){
+  const r=await fetch('/api/active',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  const j=await r.json();showMsg(j.ok?'⭐ kamera aktif: '+id:'❌ gagal',j.ok);load();
+}
+function showMsg(t,ok){const m=document.getElementById('msg');m.textContent=t;m.className=ok?'ok':'err';}
 async function save(){
   const data={camera_type:document.getElementById('camera_type').value};
-  for(const k of ['usb_index','rtsp_url','video_file','camera_name','gallery'])
-    data[k]=document.getElementById(k).value;
-  for(const k of ['telegram','mqtt','describe','no_show'])
-    data[k]=document.getElementById(k).checked;
-  const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+  if(!editId)data.id=document.getElementById('cid').value;
+  for(const k of F)data[k]=document.getElementById(k).value;
+  for(const k of B)data[k]=document.getElementById(k).checked;
+  const url=editId?'/api/cameras/'+editId:'/api/cameras';
+  const r=await fetch(url,{method:editId?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   const j=await r.json();
-  const m=document.getElementById('msg');
-  if(j.ok){m.textContent='✅ tersimpan';m.className='ok';}
-  else{m.textContent='❌ '+j.errors.join('; ');m.className='err';}
+  if(j.ok){showMsg('✅ tersimpan',true);resetForm();load();}
+  else showMsg('❌ '+j.errors.join('; '),false);
 }
-load();
+resetForm();load();
 </script></body></html>"""
 
 if __name__ == "__main__":

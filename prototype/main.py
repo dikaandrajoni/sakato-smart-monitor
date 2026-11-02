@@ -22,6 +22,7 @@ status retain ke sakato/monitor/<camera>/status untuk Home Assistant.
 
 import argparse
 import os
+import time
 from datetime import datetime
 
 try:
@@ -101,6 +102,11 @@ def main():
     ap.add_argument("--vlm-model", default=None,
                     help="model VLM (default dari env VLM_MODEL atau "
                          "'moondream:1.8b')")
+    # --- Web UI: snapshot frame terakhir ---
+    ap.add_argument("--snapshot-file", default=None,
+                    help="tulis frame terakhir (JPEG) tiap 2 detik ke path "
+                         "ini, mis. web/snapshots/teras_depan.jpg "
+                         "(default: mati)")
     args = ap.parse_args()
 
     # --- Log JSONL: eksplisit (--log) atau rotasi harian (--log-dir) ---
@@ -187,6 +193,12 @@ def main():
         mq.subscribe_commands(args.camera_name, handle_command)
         mq.publish_status(args.camera_name, online=True,
                           armed=is_armed(), visible=0)
+
+    # --- Snapshot frame terakhir (web UI) ---
+    snapshot_file = args.snapshot_file
+    last_snapshot = 0.0
+    if snapshot_file:
+        print(f"[main] snapshot tiap 2 detik -> {snapshot_file}")
 
     tracker = PersonTracker(conf=args.conf)
     dedup = EventDeduplicator(leave_after=args.leave_after,
@@ -309,6 +321,19 @@ def main():
                         visible=len(tracks))
 
                 frames += 1
+                annotated = draw(frame, tracks, face_names)
+                # Snapshot frame terakhir tiap 2 detik (web UI)
+                if snapshot_file:
+                    now_m = time.monotonic()
+                    if now_m - last_snapshot >= 2.0:
+                        last_snapshot = now_m
+                        try:
+                            os.makedirs(os.path.dirname(
+                                os.path.abspath(snapshot_file)),
+                                exist_ok=True)
+                            cv2.imwrite(snapshot_file, annotated)
+                        except OSError:
+                            pass
                 # Rotasi log harian (Fase 5)
                 if log_dir and not explicit_log:
                     today = datetime.now().strftime("%Y%m%d")
@@ -318,7 +343,7 @@ def main():
                             log_dir, f"events-{today}.jsonl"))
                 if not args.no_show:
                     cv2.imshow("sakato-smart-monitor - tekan q untuk keluar",
-                               draw(frame, tracks, face_names))
+                               annotated)
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
                 elif frames % 100 == 0:
