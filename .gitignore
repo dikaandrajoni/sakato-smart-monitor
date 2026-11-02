@@ -1,0 +1,30 @@
+# secrets
+.env
+*.key
+*.pem
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# runtime data (jangan commit rekaman / data wajah)
+frigate/storage/
+frigate/media/
+home-assistant/config/.storage/
+agent/data/
+capture/
+dataset/
+*.jpg
+*.mp4
+!docs/**/*.jpg
+!docs/**/*.mp4
+
+# models (diunduh saat setup, bukan di-commit)
+models/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/

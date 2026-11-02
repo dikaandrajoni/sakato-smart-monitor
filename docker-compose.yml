@@ -1,0 +1,50 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config:/mosquitto/config:ro
+      - ./mosquitto/data:/mosquitto/data
+    env_file: .env
+
+  frigate:
+    image: ghcr.io/blakeblackshear/frigate:stable
+    container_name: frigate
+    restart: unless-stopped
+    privileged: true
+    shm_size: "256mb"
+    ports:
+      - "5000:5000"
+      - "8554:8554"   # RTSP restream
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./frigate/config.yml:/config/config.yml:ro
+      - ./frigate/storage:/media/frigate
+    env_file: .env
+    depends_on:
+      - mosquitto
+
+  home-assistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    volumes:
+      - ./home-assistant/config:/config
+      - /etc/localtime:/etc/localtime:ro
+    env_file: .env
+    depends_on:
+      - mosquitto
+
+  # Agent LLM pengelola (Fase 4). Service placeholder, diisi di fase agent.
+  # agent:
+  #   build: ./agent
+  #   container_name: sakato-agent
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   depends_on:
+  #     - mosquitto

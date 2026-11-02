@@ -1,0 +1,57 @@
+# Copy menjadi config.yml dan sesuaikan. Lihat docs Frigate untuk opsi lengkap.
+# Variabel ${...} diambil dari .env via docker compose.
+
+mqtt:
+  enabled: true
+  host: ${MQTT_HOST}
+  port: ${MQTT_PORT}
+  user: ${MQTT_USER}
+  password: ${MQTT_PASSWORD}
+  topic_prefix: frigate
+
+detectors:
+  cpu1:
+    type: cpu
+  # Contoh Coral USB / Hailo (aktifkan salah satu bila hardware tersedia):
+  # coral:
+  #   type: edgetpu
+  #   device: usb
+
+model:
+  # ganti ke path model kustom bila perlu
+  width: 300
+  height: 300
+
+cameras:
+  teras_depan:
+    enabled: true
+    ffmpeg:
+      inputs:
+        - path: ${CAMERA_1_RTSP}
+          roles:
+            - detect
+            - record
+    detect:
+      enabled: true
+      width: 1280
+      height: 720
+    objects:
+      track:
+        - person
+        - car
+        - cat
+        - dog
+    snapshots:
+      enabled: true
+    record:
+      enabled: true
+      retain:
+        days: 7
+        mode: motion
+    zones:
+      # contoh zona: halaman. Koordinat relatif 0-1, sesuaikan via UI Frigate.
+      halaman:
+        coordinates: 0.1,0.9,0.9,0.9,0.9,0.4,0.1,0.4
+
+# Notifikasi cerdas (face recognition + VLM + Telegram) ditangani lapisan
+# agent/ di Fase 2-4, BUKAN notifikasi mentah Frigate, agar tidak spam.
