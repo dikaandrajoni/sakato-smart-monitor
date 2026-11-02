@@ -44,6 +44,8 @@ docs/               riset & plan Fase 0-5 + panduan deploy Frigate
 docker-compose.yml  orkestrasi: mosquitto + frigate + home-assistant + agent
 ```
 
+Pengguna Windows: lihat [**docs/PANDUAN_WINDOWS.md**](docs/PANDUAN_WINDOWS.md).
+
 ## Panduan instalasi (Linux — teruji di Linux Mint)
 
 ```bash
