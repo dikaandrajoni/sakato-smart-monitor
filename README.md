@@ -29,17 +29,18 @@ Kamera --RTSP/USB--> Deteksi orang (YOLO11) + Tracking (ByteTrack)
 | 2 | Face recognition (InsightFace) + Telegram cerdas | ✅ selesai |
 | 3 | MQTT + contoh automasi Home Assistant | ✅ selesai |
 | 4 | Agent LLM pengelola (event store, tanya jawab, digest) | ✅ selesai |
-| 5 | Frigate penuh, VLM deskripsi klip, hardening | ⏳ berikutnya |
+| 5 | VLM deskripsi kejadian, bridge Telegram, hardening, Frigate siap deploy | ✅ selesai |
 
 ## Struktur repo
 
 ```
-prototype/          kode utama Fase 1-3 (deteksi, face rec, Telegram, MQTT)
-agent/              agent LLM Fase 4 (event store, tools, chat, digest)
-frigate/            konfigurasi Frigate NVR (untuk Fase 5)
+prototype/          deteksi + face rec + Telegram + MQTT + VLM (Fase 1-3, 5)
+agent/              agent LLM pengelola + bridge Telegram (Fase 4-5)
+frigate/            konfigurasi Frigate NVR (siap deploy, Fase 5)
 home-assistant/     contoh automasi + sensor HA
-mosquitto/          konfigurasi broker MQTT
-docs/               riset & plan Fase 0-5
+mosquitto/          konfigurasi broker MQTT (+ contoh auth produksi)
+deploy/             systemd unit: jalan otomatis saat boot (Fase 5)
+docs/               riset & plan Fase 0-5 + panduan deploy Frigate
 docker-compose.yml  orkestrasi: mosquitto + frigate + home-assistant + agent
 ```
 
@@ -138,6 +139,27 @@ Contoh: "siapa yang datang jam 3 sore?", "ringkasan hari ini".
 Butuh event mengalir: jalankan prototype dengan `--mqtt` + mosquitto jalan.
 Tanpa Ollama pun bisa — otomatis mode fallback (perintah: ringkasan, status,
 cari, arm, disarm). Service penuh: `python -m agent.agent`.
+Digest & eskalasi ke HP: `python -m agent.agent --bridge` (Fase 5).
+
+### 6. Deskripsi VLM (Fase 5)
+
+```bash
+ollama pull moondream:1.8b   # ±1.7 GB, sekali saja
+python main.py --source 0 --gallery gallery/ --telegram --mqtt --describe --camera-name teras_depan
+```
+
+Event penting dideskripsikan 1-2 kalimat Bahasa Indonesia di thread latar,
+ditempel ke caption Telegram, payload MQTT, dan `events.jsonl`.
+
+### 7. Jalan saat boot + deploy Frigate (Fase 5)
+
+- **systemd** (Linux Mint): lihat [`deploy/README.md`](deploy/README.md) —
+  service auto-start + restart on-failure + log harian (`--log-dir`).
+- **Frigate NVR** (mesin terpisah/RPi): lihat [`docs/DEPLOY_FRIGATE.md`](docs/DEPLOY_FRIGATE.md) —
+  install docker, copy config, buka `http://<ip>:5000`.
+  Catatan: topik MQTT Frigate (`frigate/*`) dan pipeline sakato
+  (`sakato/monitor/*`) sengaja beda — mapping didokumentasikan di
+  `frigate/config.example.yml`.
 
 ## Troubleshooting
 

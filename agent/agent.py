@@ -450,6 +450,9 @@ def build_arg_parser():
     ap.add_argument("--db", default=os.environ.get(
         "AGENT_DB", "agent/data/events.db"),
         help="path SQLite event store")
+    ap.add_argument("--bridge", action="store_true",
+                    help="teruskan outbox agent ke Telegram (Fase 5; butuh "
+                         "env TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID)")
     return ap
 
 
@@ -457,12 +460,22 @@ def main():
     args = build_arg_parser().parse_args()
     svc = AgentService(store=EventStore(args.db),
                        digest_time=args.daily_digest)
-    if args.once:
-        print(svc.answer(args.once))
-    elif args.chat:
-        svc.run_chat()
-    else:
-        svc.run_service()
+    bridge = None
+    service_mode = not (args.once or args.chat)
+    if args.bridge and service_mode:
+        from .telegram_bridge import TelegramBridge
+        bridge = TelegramBridge()
+        bridge.start()
+    try:
+        if args.once:
+            print(svc.answer(args.once))
+        elif args.chat:
+            svc.run_chat()
+        else:
+            svc.run_service()
+    finally:
+        if bridge is not None:
+            bridge.stop()
 
 
 if __name__ == "__main__":

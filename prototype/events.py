@@ -9,6 +9,7 @@ Event ditulis ke JSONL: {"ts": iso8601, "type": ..., "track_id": ...}.
 """
 
 import json
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -28,6 +29,7 @@ class EventDeduplicator:
         self._time = time_fn or time.time
         self._missing = {}      # track_id -> jumlah frame tak terlihat
         self._last_emit = {}    # event type -> timestamp emit terakhir
+        self._lock = threading.Lock()  # tulis JSONL aman antar-thread (Fase 5)
         self._fh = open(log_path, "a", encoding="utf-8")
 
     def _emit(self, event_type, track_id, extra=None):
@@ -43,9 +45,38 @@ class EventDeduplicator:
         }
         if extra:
             event.update(extra)
-        self._fh.write(json.dumps(event, ensure_ascii=False) + "\n")
-        self._fh.flush()
+        with self._lock:
+            self._fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self._fh.flush()
         return event
+
+    def log_event(self, event_type, track_id, extra=None):
+        """Tulis event bebas ke JSONL (mis. face_description dari VLM).
+
+        Tidak kena cooldown — untuk event sekali-jadi dari worker latar.
+        """
+        event = {
+            "ts": datetime.fromtimestamp(self._time(), tz=timezone.utc).isoformat(),
+            "type": event_type,
+            "track_id": track_id,
+        }
+        if extra:
+            event.update(extra)
+        with self._lock:
+            self._fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+            self._fh.flush()
+        return event
+
+    def rotate_log(self, new_path):
+        """Ganti file JSONL (rotasi harian). State tracking tetap dipertahankan."""
+        with self._lock:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self.log_path = new_path
+            self._fh = open(new_path, "a", encoding="utf-8")
+        print(f"[events] rotasi log -> {new_path}")
 
     def update(self, tracks):
         """Terima list track dict {'id': ...} dari tracker per frame.

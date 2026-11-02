@@ -32,6 +32,9 @@ python -m agent.agent --once "siapa yang datang hari ini?"
 # 3. Service penuh: dengar MQTT + eskalasi + digest harian (default 21:00)
 python -m agent.agent
 python -m agent.agent --daily-digest 07:00
+
+# 4. Service + bridge: digest & eskalasi diteruskan ke Telegram (Fase 5)
+python -m agent.agent --bridge
 ```
 
 Service butuh broker MQTT (lihat Fase 3). Tanpa broker, mode `--chat` /

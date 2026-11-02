@@ -100,7 +100,8 @@ class TelegramNotifier:
 
     # ---------- API notifikasi (dipanggil loop deteksi) ----------
 
-    def notify_unknown(self, track_id, photo_jpg_bytes, similarity=0.0):
+    def notify_unknown(self, track_id, photo_jpg_bytes, similarity=0.0,
+                       description=""):
         """Kirim foto orang tak dikenal. Kembalikan True bila terkirim."""
         if not self.enabled or not self.armed or self.is_muted():
             return False
@@ -117,10 +118,12 @@ class TelegramNotifier:
                    f"🎥 {self.camera_name}\n"
                    f"🆔 track #{track_id}\n"
                    f"📊 kemiripan wajah: {similarity:.2f}")
+        if description:  # Fase 5: hasil VLM
+            caption += f"\n🔍 {description}"
         self._send_photo_bytes(photo_jpg_bytes, caption)
         return True
 
-    def notify_known(self, name, track_id, similarity=0.0):
+    def notify_known(self, name, track_id, similarity=0.0, description=""):
         """Hanya bila notify_known=True; orang dikenal tetap dicatat di log."""
         if not self.enabled or not self.notify_known_enabled:
             return False
@@ -128,8 +131,11 @@ class TelegramNotifier:
             return False
         self._roll_day()
         self.events_today += 1
-        self._send_text(f"✅ {name} terdeteksi (track #{track_id}, "
-                        f"kemiripan {similarity:.2f})")
+        text = (f"✅ {name} terdeteksi (track #{track_id}, "
+                f"kemiripan {similarity:.2f})")
+        if description:  # Fase 5: hasil VLM
+            text += f"\n🔍 {description}"
+        self._send_text(text)
         return True
 
     # ---------- perintah bot ----------

@@ -8,6 +8,15 @@ mqtt:
   user: ${MQTT_USER}
   password: ${MQTT_PASSWORD}
   topic_prefix: frigate
+  # CATATAN MAPPING TOPIK (Fase 5):
+  # - Frigate mem-publish ke frigate/<kamera>/... (mis. frigate/events,
+  #   frigate/teras_depan/person). Topik ini untuk NVR & dashboard Frigate.
+  # - Pipeline prototype/agent memakai sakato/monitor/<kamera>/event|status
+  #   (lihat prototype/mqtt_publisher.py). JANGAN samakan topic_prefix
+  #   Frigate ke "sakato/monitor" — format payload keduanya BEDA dan
+  #   agent hanya membaca format sakato/monitor/*.
+  # - Bila ingin event Frigate masuk pipeline sakato, tambahkan penerjemah
+  #   kecil (rencana Fase lanjutan), bukan dengan mengubah topik.
 
 detectors:
   cpu1:

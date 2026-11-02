@@ -1,13 +1,18 @@
-"""Fase 3: deteksi orang + tracking + face recognition + Telegram + MQTT.
+"""Fase 5: deteksi orang + tracking + face recognition + Telegram + MQTT + VLM.
 
 Contoh:
     python main.py --source 0
     python main.py --source 0 --telegram --gallery gallery/
     python main.py --source rekaman.mp4 --no-show --gallery gallery/ --telegram
+    python main.py --source 0 --gallery gallery/ --telegram --mqtt --describe
 
 Alur per track: saat person_entered -> crop bbox orang -> kenali wajah
 (InsightFace vs galeri) -> Unknown = notifikasi Telegram + foto,
 dikenal = catat di log saja (kecuali --notify-known).
+
+--describe (Fase 5): event penting dideskripsikan VLM lokal (Ollama) di
+thread latar; deskripsi ditempel ke caption Telegram, payload MQTT,
+dan events.jsonl. Pipeline tidak diblokir.
 
 Tekan 'q' pada jendela video untuk keluar (mode GUI).
 
@@ -17,6 +22,7 @@ status retain ke sakato/monitor/<camera>/status untuk Home Assistant.
 
 import argparse
 import os
+from datetime import datetime
 
 try:
     from dotenv import load_dotenv
@@ -59,8 +65,12 @@ def main():
                     help="threshold confidence deteksi (default 0.5)")
     ap.add_argument("--no-show", action="store_true",
                     help="tanpa jendela GUI (untuk headless)")
-    ap.add_argument("--log", default="events.jsonl",
-                    help="path file JSONL event (default events.jsonl)")
+    ap.add_argument("--log", default=None,
+                    help="path file JSONL event (default: events.jsonl, atau "
+                         "rotasi harian bila --log-dir dipakai)")
+    ap.add_argument("--log-dir", default=None,
+                    help="folder log: tulis ke events-YYYYMMDD.jsonl dan "
+                         "rotasi otomatis tiap ganti hari (Fase 5)")
     ap.add_argument("--leave-after", type=int, default=30,
                     help="frame tak terlihat sebelum person_left (default 30)")
     # --- Fase 2 ---
@@ -84,7 +94,32 @@ def main():
                          "default localhost:1883)")
     ap.add_argument("--mqtt-status-every", type=int, default=150,
                     help="publish status tiap N frame (default 150)")
+    # --- Fase 5 ---
+    ap.add_argument("--describe", action="store_true",
+                    help="deskripsikan event penting dengan VLM lokal via "
+                         "Ollama (butuh: ollama pull moondream:1.8b)")
+    ap.add_argument("--vlm-model", default=None,
+                    help="model VLM (default dari env VLM_MODEL atau "
+                         "'moondream:1.8b')")
     args = ap.parse_args()
+
+    # --- Log JSONL: eksplisit (--log) atau rotasi harian (--log-dir) ---
+    explicit_log = args.log
+    log_dir = args.log_dir
+    current_log_day = None
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    def log_path_for_today():
+        if explicit_log:
+            return explicit_log
+        if log_dir:
+            return os.path.join(
+                log_dir, f"events-{datetime.now():%Y%m%d}.jsonl")
+        return "events.jsonl"
+
+    if log_dir and not explicit_log:
+        current_log_day = datetime.now().strftime("%Y%m%d")
 
     source = parse_source(args.source)
     print(f"[main] source={source!r} conf={args.conf}")
@@ -154,8 +189,53 @@ def main():
                           armed=is_armed(), visible=0)
 
     tracker = PersonTracker(conf=args.conf)
-    dedup = EventDeduplicator(leave_after=args.leave_after, log_path=args.log)
+    dedup = EventDeduplicator(leave_after=args.leave_after,
+                              log_path=log_path_for_today())
     face_names = {}  # track_id -> (nama, similarity), dikenali sekali saja
+    described = set()  # Fase 5: track_id yang sudah dideskripsikan VLM
+
+    # --- VLM describer (Fase 5, opsional) ---
+    describe_worker = None
+    if args.describe:
+        from describer import EventDescriber, DescribeWorker, should_describe
+        _describer = EventDescriber(model=args.vlm_model)
+        if _describer.available():
+            describe_worker = DescribeWorker(_describer)
+            print(f"[vlm] aktif: model {_describer.model} — event penting "
+                  f"dideskripsikan di latar (Bahasa Indonesia).")
+        else:
+            print("[vlm] Ollama/VLM tidak terjangkau — deskripsi "
+                  "dinonaktifkan, program tetap jalan.")
+
+    def send_event_notifications(tid, name, sim, crop_jpg, description="",
+                                 with_face=True):
+        """Kirim notifikasi Telegram + MQTT untuk satu person_entered."""
+        # Telegram: hanya bila face recognition jalan (perilaku lama).
+        if notifier is not None and with_face:
+            if name == "Unknown":
+                if crop_jpg is not None:
+                    notifier.notify_unknown(tid, crop_jpg, similarity=sim,
+                                            description=description)
+            else:
+                notifier.notify_known(name, tid, similarity=sim,
+                                      description=description)
+        if mq is not None:
+            mq.publish_event(args.camera_name, "person_entered", tid)
+            if with_face:
+                mq.publish_event(
+                    args.camera_name,
+                    "face_known" if name != "Unknown" else "face_unknown",
+                    tid, name=name, similarity=sim,
+                    description=description or None)
+
+    def on_described(tid, name, sim, crop_jpg, description, with_face):
+        """Callback worker VLM: kirim notifikasi yang tertunda + catat."""
+        if description:
+            print(f"[vlm] track #{tid}: {description}")
+            dedup.log_event("face_description", tid,
+                            {"name": name, "description": description})
+        send_event_notifications(tid, name, sim, crop_jpg,
+                                 description=description, with_face=with_face)
 
     try:
         with CameraSource(source) as cam:
@@ -173,34 +253,48 @@ def main():
                     tid = ev["track_id"]
                     print(f"[event] {ev['type']} track_id={tid}")
                     name, sim = face_names.get(tid, ("Unknown", 0.0))
-                    if ev["type"] == "person_entered" and recognizer:
-                        x1, y1, x2, y2 = expand_box(boxes[tid], w, h)
-                        crop = frame[y1:y2, x1:x2]
-                        name, sim = recognizer.identify(crop) \
-                            if crop.size > 0 else ("Unknown", 0.0)
-                        face_names[tid] = (name, sim)
-                        print(f"[face] track #{tid} -> {name} ({sim:.2f})")
-                        if notifier is not None:
-                            ok, jpg = cv2.imencode(".jpg", crop)
-                            if name == "Unknown":
-                                notifier.notify_unknown(
-                                    tid, jpg.tobytes(), similarity=sim)
-                            else:
-                                notifier.notify_known(name, tid, similarity=sim)
-                    if mq is not None:
-                        if ev["type"] == "person_entered":
-                            mq.publish_event(args.camera_name, "person_entered",
-                                             tid)
-                            if recognizer:
-                                mq.publish_event(
-                                    args.camera_name,
-                                    "face_known" if name != "Unknown"
-                                    else "face_unknown",
-                                    tid, name=name, similarity=sim)
-                        elif ev["type"] == "person_left":
+                    if ev["type"] == "person_entered":
+                        crop = None
+                        crop_jpg = None
+                        if tid in boxes:
+                            x1, y1, x2, y2 = expand_box(boxes[tid], w, h)
+                            c = frame[y1:y2, x1:x2]
+                            if c.size > 0:
+                                crop = c
+                                ok, _jpg = cv2.imencode(
+                                    ".jpg", c, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                                if ok:
+                                    crop_jpg = _jpg.tobytes()
+                        with_face = recognizer is not None and crop is not None
+                        if with_face:
+                            name, sim = recognizer.identify(crop)
+                            face_names[tid] = (name, sim)
+                            print(f"[face] track #{tid} -> {name} ({sim:.2f})")
+                        # VLM (Fase 5): event penting + armed -> deskripsi di
+                        # thread latar, notifikasi dikirim setelah siap.
+                        if (describe_worker is not None
+                                and crop_jpg is not None
+                                and tid not in described
+                                and should_describe("person_entered",
+                                                    is_armed())):
+                            described.add(tid)
+                            ctx = (f"kamera {args.camera_name}, orang "
+                                   f"terdeteksi sebagai {name}")
+                            describe_worker.submit(
+                                tid, crop_jpg, ctx,
+                                lambda desc, _tid=tid, _name=name, _sim=sim,
+                                _jpg=crop_jpg, _wf=with_face:
+                                on_described(_tid, _name, _sim, _jpg, desc,
+                                             _wf))
+                        else:
+                            send_event_notifications(
+                                tid, name, sim, crop_jpg, with_face=with_face)
+                    elif ev["type"] == "person_left":
+                        if mq is not None:
                             mq.publish_event(args.camera_name, "person_left",
                                              tid)
-                            face_names.pop(tid, None)
+                        face_names.pop(tid, None)
+                        described.discard(tid)
 
                 if notifier is not None and frames % 15 == 0:
                     ok, jpg = cv2.imencode(".jpg", frame,
@@ -215,8 +309,15 @@ def main():
                         visible=len(tracks))
 
                 frames += 1
+                # Rotasi log harian (Fase 5)
+                if log_dir and not explicit_log:
+                    today = datetime.now().strftime("%Y%m%d")
+                    if today != current_log_day:
+                        current_log_day = today
+                        dedup.rotate_log(os.path.join(
+                            log_dir, f"events-{today}.jsonl"))
                 if not args.no_show:
-                    cv2.imshow("sakato-smart-monitor (fase 3) - tekan q untuk keluar",
+                    cv2.imshow("sakato-smart-monitor - tekan q untuk keluar",
                                draw(frame, tracks, face_names))
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
@@ -225,6 +326,8 @@ def main():
     except KeyboardInterrupt:
         print("\n[main] dihentikan pengguna.")
     finally:
+        if describe_worker is not None:
+            describe_worker.stop()
         if mq is not None:
             mq.publish_status(args.camera_name, online=False,
                               armed=is_armed(),

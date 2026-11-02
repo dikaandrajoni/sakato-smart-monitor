@@ -143,13 +143,14 @@ class MqttPublisher:
             return False
 
     def publish_event(self, camera, event_type, track_id,
-                      name=None, similarity=None):
+                      name=None, similarity=None, description=None):
         """Kirim satu event deteksi. Kembalikan True bila berhasil di-queue."""
         cam = sanitize_camera(camera)
         payload = {
             "ts": utcnow_iso(),
             "type": event_type,          # person_entered | person_left |
-                                    # face_known | face_unknown
+                                    # face_known | face_unknown |
+                                    # face_description
             "track_id": track_id,
             "camera": cam,
         }
@@ -157,6 +158,8 @@ class MqttPublisher:
             payload["name"] = name
         if similarity is not None:
             payload["similarity"] = round(float(similarity), 3)
+        if description:  # Fase 5: deskripsi VLM (1-2 kalimat Bahasa Indonesia)
+            payload["description"] = description
         topic = f"sakato/monitor/{cam}/event"
         return self._publish(topic, json.dumps(payload, ensure_ascii=False))
 
