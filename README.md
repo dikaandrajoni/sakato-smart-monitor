@@ -42,6 +42,7 @@ mosquitto/          konfigurasi broker MQTT (+ contoh auth produksi)
 deploy/             systemd unit: jalan otomatis saat boot (Fase 5)
 docs/               riset & plan Fase 0-5 + panduan deploy Frigate
 docker-compose.yml  orkestrasi: mosquitto + frigate + home-assistant + agent
+web/                web UI konfigurasi (pilih kamera, start/stop, event)
 ```
 
 Pengguna Windows: lihat [**docs/PANDUAN_WINDOWS.md**](docs/PANDUAN_WINDOWS.md).
@@ -62,6 +63,24 @@ CAMERA_NAME=teras_belakang ./run.sh
 ```
 
 `Ctrl+C` menghentikan semuanya.
+
+## Konfigurasi via Web UI
+
+Malas edit flag CLI? Atur semuanya dari browser:
+
+```bash
+cd web
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python app.py
+# buka http://localhost:8080
+```
+
+Bisa pilih sumber kamera (laptop / USB / RTSP CCTV / file video), nama kamera,
+Telegram / MQTT / VLM, lalu Start/Stop pipeline dan lihat 10 event terakhir +
+log — semua dari web. Detail: [`web/README.md`](web/README.md).
+
+> Tanpa autentikasi — hanya untuk LAN rumah, jangan expose ke internet.
 
 ## Panduan instalasi (Linux — teruji di Linux Mint)
 
