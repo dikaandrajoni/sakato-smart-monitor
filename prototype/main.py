@@ -122,14 +122,36 @@ def main():
             notifier = None  # nonaktif: peringatan sudah dicetak
 
     # --- MQTT (opsional, Fase 3) ---
+    # armed bisa diubah dari dua arah: perintah Telegram (/arm) dan
+    # perintah MQTT dari agent (Fase 4: topik .../command).
+    armed_state = {"armed": True}
+
+    def is_armed():
+        base = notifier.armed if notifier else True
+        return bool(base and armed_state["armed"])
+
     mq = None
     if args.mqtt:
         from mqtt_publisher import MqttPublisher
         mq = MqttPublisher()
         mq.start()
+
+        def handle_command(payload):
+            cmd = str(payload.get("command", "")).lower()
+            if cmd == "arm":
+                armed_state["armed"] = True
+                if notifier is not None:
+                    notifier.armed = True
+                print("[mqtt] perintah dari agent: ARM")
+            elif cmd == "disarm":
+                armed_state["armed"] = False
+                if notifier is not None:
+                    notifier.armed = False
+                print("[mqtt] perintah dari agent: DISARM")
+
+        mq.subscribe_commands(args.camera_name, handle_command)
         mq.publish_status(args.camera_name, online=True,
-                          armed=(notifier.armed if notifier else True),
-                          visible=0)
+                          armed=is_armed(), visible=0)
 
     tracker = PersonTracker(conf=args.conf)
     dedup = EventDeduplicator(leave_after=args.leave_after, log_path=args.log)
@@ -189,7 +211,7 @@ def main():
                 if mq is not None and frames % args.mqtt_status_every == 0:
                     mq.publish_status(
                         args.camera_name, online=True,
-                        armed=(notifier.armed if notifier else True),
+                        armed=is_armed(),
                         visible=len(tracks))
 
                 frames += 1
@@ -205,7 +227,7 @@ def main():
     finally:
         if mq is not None:
             mq.publish_status(args.camera_name, online=False,
-                              armed=(notifier.armed if notifier else True),
+                              armed=is_armed(),
                               visible=0)
             mq.stop()
         if notifier is not None:
