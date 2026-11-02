@@ -34,3 +34,8 @@ models/
 .DS_Store
 .idea/
 .vscode/
+
+# web UI (config berisi kredensial RTSP!)
+web/config.json
+web/pipeline.log
+web/*.log
