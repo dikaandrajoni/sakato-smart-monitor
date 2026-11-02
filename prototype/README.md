@@ -1,14 +1,17 @@
-# Fase 2 — Face Recognition + Notifikasi Telegram Cerdas
+# Fase 3 — MQTT + Home Assistant
 
-Pipeline Fase 1 (YOLO11n + ByteTrack + event dedup) ditambah:
+Pipeline Fase 2 (YOLO11n + ByteTrack + InsightFace + Telegram) ditambah:
 
-1. **Face recognition (InsightFace, model `buffalo_l`)** — tiap `person_entered`
-   di-crop wajahnya dan dicocokkan ke galeri. Semua inference lokal (CPU).
-2. **Notifikasi Telegram cerdas (python-telegram-bot v21)** — orang tak dikenal
-   → foto + caption (waktu, kamera, track ID, kemiripan); orang dikenal →
-   dicatat saja. Anti-spam: cooldown per track ID + perintah `/mute`.
-3. **Perintah bot dua arah**: `/status`, `/snapshot`, `/arm`, `/disarm`,
-   `/mute <menit>`.
+1. **Publisher MQTT (`mqtt_publisher.py`, paho-mqtt)** — setiap event
+   di-publish ke `sakato/monitor/<camera>/event` sebagai JSON; status
+   (online, armed, jumlah orang terlihat) di-publish retain ke
+   `sakato/monitor/<camera>/status` setiap N frame.
+2. **Contoh integrasi Home Assistant** — automasi siap pakai di
+   `home-assistant/automations.example.yaml` + sensor template di
+   `configuration.example.yaml` + panduan di `home-assistant/README.md`.
+
+Telegram tetap jalan seperti Fase 2 — MQTT adalah jalur kedua untuk
+otomasi rumah (lampu, sirene, notifikasi HA), bukan pengganti Telegram.
 
 ---
 
@@ -25,13 +28,16 @@ publik. **Jangan pernah pakai lagi.** Revoke di @BotFather, lalu buat baru:
 ```bash
 TELEGRAM_BOT_TOKEN=isi_token_baru_di_sini
 TELEGRAM_CHAT_ID=isi_angka_chat_id_di_sini
+# --- MQTT (Fase 3, opsional) ---
+MQTT_HOST=localhost
+MQTT_PORT=1883
+# MQTT_USER=
+# MQTT_PASSWORD=
 ```
 
-Lalu jalankan dengan `set -a; source .env; set +a` (Linux/macOS) atau isi
-manual sebagai environment variable di Windows, sebelum `python main.py`.
-
-Token HANYA dibaca dari environment. Tidak ada default, tidak ada hardcode.
-Bila kosong, notifier nonaktif dengan peringatan — program tetap jalan.
+File `.env` otomatis dibaca saat program mulai (python-dotenv).
+Bila variabel Telegram/MQTT kosong, fitur terkait nonaktif dengan
+peringatan — program tetap jalan.
 
 ## Instalasi
 
@@ -61,24 +67,19 @@ untuk tiap orang. Hasil: `gallery/<nama>/shot_000.jpg`, dst.
 ## Menjalankan monitor
 
 ```bash
-# Tanpa Telegram (mode uji)
+# Tanpa Telegram/MQTT (mode uji)
 python main.py --source 0 --gallery gallery/
 
-# Lengkap: Telegram aktif
-python main.py --source 0 --gallery gallery/ --telegram --camera-name teras_depan
+# Lengkap: Telegram + MQTT aktif
+python main.py --source 0 --gallery gallery/ --telegram --mqtt --camera-name teras_depan
 
-# Headless + hanya notifikasi orang tak dikenal (default)
-python main.py --source 0 --gallery gallery/ --telegram --no-show
-
-# Termasuk notifikasi orang yang dikenal
-python main.py --source 0 --gallery gallery/ --telegram --notify-known
+# Headless
+python main.py --source 0 --gallery gallery/ --telegram --mqtt --no-show
 ```
 
-Flag tambahan: `--face-threshold` (default 0.6 — naikkan bila sering salah
-mengenali), `--notify-cooldown` detik (default 300), `--conf`, `--log`.
-
-Tanpa folder `gallery/` yang valid, semua orang dianggap Unknown dan
-face recognition dimatikan otomatis.
+Flag tambahan: `--face-threshold` (default 0.6), `--notify-cooldown` (default
+300 dtk), `--mqtt-status-every` (publish status tiap N frame, default 150),
+`--conf`, `--log`.
 
 ## Perintah Telegram
 
@@ -91,34 +92,80 @@ face recognition dimatikan otomatis.
 | `/disarm` | matikan notifikasi |
 | `/mute <menit>` | bisukan sementara, mis. `/mute 30` |
 
+## MQTT — topik & payload
+
+Jalankan broker dulu (pilih salah satu):
+
+```bash
+# Docker:
+docker run -d --name mosquitto -p 1883:1883 \
+  -v $(pwd)/../mosquitto/config:/mosquitto/config:ro \
+  eclipse-mosquitto:2
+
+# atau install langsung (Linux Mint / Ubuntu):
+sudo apt install -y mosquitto
+sudo systemctl start mosquitto
+```
+
+Lalu intip event yang lewat:
+
+```bash
+mosquitto_sub -h localhost -t "sakato/monitor/#" -v
+```
+
+**Topik event** `sakato/monitor/<camera>/event` (tidak retain):
+
+```json
+{"ts": "2026-11-02T10:00:01+00:00", "type": "person_entered", "track_id": 3, "camera": "teras_depan"}
+{"ts": "2026-11-02T10:00:02+00:00", "type": "face_unknown", "track_id": 3, "camera": "teras_depan", "name": "Unknown", "similarity": 0.31}
+{"ts": "2026-11-02T10:00:03+00:00", "type": "face_known", "track_id": 4, "camera": "teras_depan", "name": "dika", "similarity": 0.87}
+{"ts": "2026-11-02T10:05:01+00:00", "type": "person_left", "track_id": 3, "camera": "teras_depan"}
+```
+
+**Topik status** `sakato/monitor/<camera>/status` (retain — subscriber baru
+langsung dapat nilai terakhir):
+
+```json
+{"ts": "2026-11-02T10:00:05+00:00", "camera": "teras_depan", "online": true, "armed": true, "visible": 2}
+```
+
+Bila broker tidak ada saat program mulai: peringatan dicetak **sekali**,
+program tetap jalan, dan koneksi dicoba ulang otomatis di background.
+
+## Home Assistant
+
+Contoh siap pakai ada di `home-assistant/`:
+ikuti `home-assistant/README.md` (pasang integrasi MQTT → tambah sensor →
+paste automasi via UI).
+
 ## Event log (JSONL)
 
-Sama seperti Fase 1, plus info wajah di console:
+Sama seperti Fase 2, plus info wajah di console:
 
 ```
 [event] person_entered track_id=3
 [face] track #3 -> dika (0.87)
 ```
 
-## Keterbatasan Fase 2
+## Keterbatasan Fase 3
 
+- MQTT tanpa TLS/auth secara default — aman untuk jaringan rumah sendiri,
+  **aktifkan `password_file` di mosquitto.conf sebelum expose ke internet**
+  (caranya sudah dikomentari di file config).
+- Event `face_known`/`face_unknown` hanya dikirim saat `person_entered`
+  (tidak diulang tiap frame) — HA yang butuh "masih ada orang" pakai topik
+  `status` (`visible`).
 - **Anti-spoofing lemah**: `buffalo_l` tidak punya liveness detection yang kuat.
   Foto cetak / layar HP wajah terdaftar DAPAT menipu sistem. Jangan jadikan
-  satu-satunya kunci akses (mis. buka pintu) tanpa faktor kedua.
-- Threshold 0.6 adalah titik awal — sesuaikan dengan kondisi pencahayaan rumah.
-- ByteTrack kadang ganti ID bila orang hilang lama dari frame (ID switch);
-  wajah dikenali ulang sebagai track baru.
-- InsightFace di CPU: tambah ~50–150 ms per wajah. Di laptop kentang,
-  pertimbangkan `--conf` lebih tinggi agar crop wajah lebih sedikit.
-- Notifikasi Unknown memakai crop wajah dari bbox YOLO — bila wajah kecil /
-  blur, kemiripan rendah dan wajar jadi Unknown.
-- Belum ada deskripsi kejadian Bahasa Indonesia (itu Fase 3/4 dengan VLM).
+  satu-satunya kunci akses tanpa faktor kedua.
+- Threshold 0.6 adalah titik awal — sesuaikan dengan pencahayaan rumah.
 
-## Rencana Fase 3
+## Rencana Fase 4
 
-1. Integrasi **Home Assistant via MQTT** (gantikan notifier langsung):
-   Frigate-style event topic, automasi lampu/sirene.
+1. **Frigate NVR penuh** (gantikan prototype sebagai sumber deteksi
+   multi-kamera): `docker-compose.yml` sudah menyiapkan service-nya.
 2. **VLM lokal** (Moondream2 / Qwen2.5-VL via Ollama) untuk deskripsi kejadian
    Bahasa Indonesia sebagai verifikator lapis kedua.
-3. Event store SQLite + riwayat klip per event.
-4. Mode multi-kamera (`--camera-name` per sumber).
+3. **Agent LLM pengelola** — query bahasa natural atas event store, investigasi
+   klip, perintah arm/disarm (lihat `agent/README.md` di root repo).
+4. Event store SQLite + riwayat klip per event.
