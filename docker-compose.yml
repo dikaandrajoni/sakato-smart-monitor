@@ -40,11 +40,18 @@ services:
     depends_on:
       - mosquitto
 
-  # Agent LLM pengelola (Fase 4). Service placeholder, diisi di fase agent.
-  # agent:
-  #   build: ./agent
-  #   container_name: sakato-agent
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   depends_on:
-  #     - mosquitto
+  # Agent LLM pengelola (Fase 4): dengar MQTT, simpan event ke SQLite,
+  # jawab pertanyaan via Ollama / mode fallback, digest + eskalasi.
+  agent:
+    build: ./agent
+    container_name: sakato-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Di dalam docker network, broker MQTT bernama 'mosquitto'
+      - MQTT_HOST=mosquitto
+      - AGENT_DB=/app/agent/data/events.db
+    volumes:
+      - ./agent/data:/app/agent/data
+    depends_on:
+      - mosquitto

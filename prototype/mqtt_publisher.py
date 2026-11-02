@@ -160,6 +160,37 @@ class MqttPublisher:
         topic = f"sakato/monitor/{cam}/event"
         return self._publish(topic, json.dumps(payload, ensure_ascii=False))
 
+    def subscribe_commands(self, camera, callback):
+        """Dengarkan perintah arm/disarm dari agent (Fase 4).
+
+        Subscribe ke sakato/monitor/<camera>/command DAN
+        sakato/monitor/command (global). callback(payload_dict).
+        Aman dipanggil sebelum broker ada (paho mengantre subscribe).
+        """
+        if not self.enabled or self._client is None:
+            return False
+        cam = sanitize_camera(camera)
+
+        def _on_message(client, userdata, msg):
+            try:
+                payload = json.loads(msg.payload.decode("utf-8"))
+            except Exception:
+                return
+            try:
+                callback(payload if isinstance(payload, dict) else {})
+            except Exception as e:
+                print(f"[mqtt] error handler command: {e}")
+
+        try:
+            for topic in (f"sakato/monitor/{cam}/command",
+                          "sakato/monitor/command"):
+                self._client.message_callback_add(topic, _on_message)
+                self._client.subscribe(topic, qos=1)
+            return True
+        except Exception as e:
+            self._warn_once(f"gagal subscribe command: {e}")
+            return False
+
     def publish_status(self, camera, online=True, armed=True, visible=0):
         """Status retain: online/offline, armed, jumlah orang terlihat."""
         cam = sanitize_camera(camera)
