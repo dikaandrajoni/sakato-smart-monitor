@@ -1,0 +1,73 @@
+# Contoh automasi Home Assistant untuk sakato-smart-monitor (Fase 3)
+#
+# Cara pasang (pilih salah satu):
+#   A. Via UI (disarankan): Settings > Automations & Scenes > Create automation
+#      > titik tiga (kanan atas) > "Edit in YAML" > paste SATU blok automation
+#      di bawah ini > Save.
+#   B. File: copy ke home-assistant/config/automations.yaml (di dalam
+#      list automasi yang sudah ada), lalu restart Home Assistant.
+#
+# Prasyarat:
+#   - Integrasi MQTT aktif: Settings > Devices & services > Add integration > MQTT
+#     (broker = IP laptop/RPi tempat mosquitto jalan, port 1883).
+#   - Ganti `light.lampu_teras` dengan entity lampu kamu yang sebenarnya
+#     (cek di Settings > Devices & services > Entities).
+#   - Ganti `teras_depan` pada topik bila --camera-name kamu berbeda.
+#   - Sensor "Sakato orang terlihat" dibuat dulu (lihat
+#     configuration.example.yaml bagian mqtt sensor), dipakai automasi #2.
+
+# ---------------------------------------------------------------------------
+# 1. Orang tak dikenal -> nyalakan lampu teras + notifikasi persisten di HA
+# ---------------------------------------------------------------------------
+- alias: "Sakato: orang tak dikenal - nyalakan lampu teras"
+  description: "Nyalakan lampu teras dan buat notifikasi saat wajah tak dikenal terdeteksi"
+  trigger:
+    - platform: mqtt
+      topic: "sakato/monitor/+/event"
+  condition:
+    - condition: template
+      value_template: "{{ trigger.payload_json.type == 'face_unknown' }}"
+  action:
+    - service: light.turn_on
+      target:
+        entity_id: light.lampu_teras
+    - service: persistent_notification.create
+      data:
+        title: "Sakato Smart Monitor"
+        message: >-
+          Orang tak dikenal terdeteksi di kamera
+          {{ trigger.payload_json.camera }}
+          ({{ now().strftime('%d %b %H:%M') }}).
+
+# ---------------------------------------------------------------------------
+# 2. Sepi 5 menit (tidak ada orang terlihat) -> matikan lampu teras
+# ---------------------------------------------------------------------------
+- alias: "Sakato: sepi 5 menit - matikan lampu teras"
+  description: "Matikan lampu teras bila tidak ada orang terlihat selama 5 menit"
+  trigger:
+    - platform: numeric_state
+      entity_id: sensor.sakato_orang_terlihat
+      below: 1
+      for: "00:05:00"
+  action:
+    - service: light.turn_off
+      target:
+        entity_id: light.lampu_teras
+
+# ---------------------------------------------------------------------------
+# 3. (Opsional) Orang dikenal pulang -> matikan mode siaga / sapa via notif
+# ---------------------------------------------------------------------------
+# - alias: "Sakato: keluarga terdeteksi"
+#   description: "Contoh: kirim notifikasi saat anggota keluarga terdeteksi"
+#   trigger:
+#     - platform: mqtt
+#       topic: "sakato/monitor/+/event"
+#   condition:
+#     - condition: template
+#       value_template: >-
+#         {{ trigger.payload_json.type == 'face_known' }}
+#   action:
+#     - service: persistent_notification.create
+#       data:
+#         title: "Sakato Smart Monitor"
+#         message: "{{ trigger.payload_json.name }} terdeteksi di kamera {{ trigger.payload_json.camera }}."

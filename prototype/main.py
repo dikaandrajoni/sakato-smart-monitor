@@ -1,4 +1,4 @@
-"""Fase 2: deteksi orang + tracking + face recognition + notifikasi Telegram.
+"""Fase 3: deteksi orang + tracking + face recognition + Telegram + MQTT.
 
 Contoh:
     python main.py --source 0
@@ -10,6 +10,9 @@ Alur per track: saat person_entered -> crop bbox orang -> kenali wajah
 dikenal = catat di log saja (kecuali --notify-known).
 
 Tekan 'q' pada jendela video untuk keluar (mode GUI).
+
+MQTT (--mqtt): publish event ke sakato/monitor/<camera>/event dan
+status retain ke sakato/monitor/<camera>/status untuk Home Assistant.
 """
 
 import argparse
@@ -49,7 +52,7 @@ def draw(frame, tracks, names):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Fase 2: deteksi + tracking + face recognition + Telegram")
+        description="Fase 3: deteksi + tracking + face recognition + Telegram + MQTT")
     ap.add_argument("--source", required=True,
                     help="0 (kamera laptop), 1+ (USB), rtsp://..., atau path file video")
     ap.add_argument("--conf", type=float, default=0.5,
@@ -73,7 +76,14 @@ def main():
     ap.add_argument("--notify-cooldown", type=int, default=300,
                     help="detik minimum antar notifikasi per track (default 300)")
     ap.add_argument("--camera-name", default="kamera",
-                    help="label kamera untuk caption Telegram (default 'kamera')")
+                    help="label kamera untuk caption Telegram & topik MQTT "
+                         "(default 'kamera')")
+    # --- Fase 3 ---
+    ap.add_argument("--mqtt", action="store_true",
+                    help="aktifkan publisher MQTT (env MQTT_HOST/PORT/USER/PASSWORD; "
+                         "default localhost:1883)")
+    ap.add_argument("--mqtt-status-every", type=int, default=150,
+                    help="publish status tiap N frame (default 150)")
     args = ap.parse_args()
 
     source = parse_source(args.source)
@@ -111,6 +121,16 @@ def main():
         else:
             notifier = None  # nonaktif: peringatan sudah dicetak
 
+    # --- MQTT (opsional, Fase 3) ---
+    mq = None
+    if args.mqtt:
+        from mqtt_publisher import MqttPublisher
+        mq = MqttPublisher()
+        mq.start()
+        mq.publish_status(args.camera_name, online=True,
+                          armed=(notifier.armed if notifier else True),
+                          visible=0)
+
     tracker = PersonTracker(conf=args.conf)
     dedup = EventDeduplicator(leave_after=args.leave_after, log_path=args.log)
     face_names = {}  # track_id -> (nama, similarity), dikenali sekali saja
@@ -130,6 +150,7 @@ def main():
                 for ev in dedup.update(tracks):
                     tid = ev["track_id"]
                     print(f"[event] {ev['type']} track_id={tid}")
+                    name, sim = face_names.get(tid, ("Unknown", 0.0))
                     if ev["type"] == "person_entered" and recognizer:
                         x1, y1, x2, y2 = expand_box(boxes[tid], w, h)
                         crop = frame[y1:y2, x1:x2]
@@ -144,6 +165,20 @@ def main():
                                     tid, jpg.tobytes(), similarity=sim)
                             else:
                                 notifier.notify_known(name, tid, similarity=sim)
+                    if mq is not None:
+                        if ev["type"] == "person_entered":
+                            mq.publish_event(args.camera_name, "person_entered",
+                                             tid)
+                            if recognizer:
+                                mq.publish_event(
+                                    args.camera_name,
+                                    "face_known" if name != "Unknown"
+                                    else "face_unknown",
+                                    tid, name=name, similarity=sim)
+                        elif ev["type"] == "person_left":
+                            mq.publish_event(args.camera_name, "person_left",
+                                             tid)
+                            face_names.pop(tid, None)
 
                 if notifier is not None and frames % 15 == 0:
                     ok, jpg = cv2.imencode(".jpg", frame,
@@ -151,9 +186,15 @@ def main():
                     if ok:
                         notifier.set_last_frame(jpg.tobytes())
 
+                if mq is not None and frames % args.mqtt_status_every == 0:
+                    mq.publish_status(
+                        args.camera_name, online=True,
+                        armed=(notifier.armed if notifier else True),
+                        visible=len(tracks))
+
                 frames += 1
                 if not args.no_show:
-                    cv2.imshow("sakato-smart-monitor (fase 2) - tekan q untuk keluar",
+                    cv2.imshow("sakato-smart-monitor (fase 3) - tekan q untuk keluar",
                                draw(frame, tracks, face_names))
                     if cv2.waitKey(1) & 0xFF == ord("q"):
                         break
@@ -162,6 +203,11 @@ def main():
     except KeyboardInterrupt:
         print("\n[main] dihentikan pengguna.")
     finally:
+        if mq is not None:
+            mq.publish_status(args.camera_name, online=False,
+                              armed=(notifier.armed if notifier else True),
+                              visible=0)
+            mq.stop()
         if notifier is not None:
             notifier.stop()
         dedup.close()

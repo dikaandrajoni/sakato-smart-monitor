@@ -7,7 +7,26 @@ mqtt:
   username: ${MQTT_USER}
   password: ${MQTT_PASSWORD}
 
+# ---------------------------------------------------------------------------
+# Sensor MQTT: jumlah orang terlihat (dibaca dari topik status retain
+# yang di-publish prototype dengan --mqtt).
+# Catatan: state_topic TIDAK mendukung wildcard (+), jadi sesuaikan
+# "teras_depan" dengan --camera-name yang kamu pakai. Ulangi blok sensor
+# per kamera bila punya lebih dari satu.
+# Setelah tambah sensor: restart Home Assistant
+# (Settings > System > Restart).
+# ---------------------------------------------------------------------------
+  sensor:
+    - name: "Sakato orang terlihat"
+      unique_id: sakato_orang_terlihat
+      state_topic: "sakato/monitor/teras_depan/status"
+      value_template: "{{ value_json.visible }}"
+      json_attributes_topic: "sakato/monitor/teras_depan/status"
+      icon: mdi:account-eye
+
 # Contoh automasi: lampu teras nyala saat Frigate mendeteksi orang di zona halaman.
+# (Untuk automasi berbasis event sakato, lihat automations.example.yaml —
+#  cara pasang via UI dijelaskan di home-assistant/README.md)
 # automation:
 #   - alias: "Lampu teras saat ada orang"
 #     trigger:

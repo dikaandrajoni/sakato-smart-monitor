@@ -1,4 +1,4 @@
-# Fase 2: deteksi orang + tracking + face recognition + Telegram
+# Fase 3: deteksi orang + tracking + face recognition + Telegram + MQTT
 ultralytics>=8.0,<9.0
 opencv-python>=4.8,<5.0
 numpy>=1.24,<3.0
@@ -6,3 +6,4 @@ insightface>=0.7,<0.8
 onnxruntime>=1.17,<2.0
 python-telegram-bot>=21,<22
 python-dotenv>=1.0,<2.0
+paho-mqtt>=1.6,<2.0
