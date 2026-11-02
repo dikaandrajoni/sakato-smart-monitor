@@ -1,0 +1,30 @@
+[Unit]
+Description=Sakato Smart Monitor (deteksi + face rec + Telegram + MQTT + VLM)
+Documentation=https://github.com/dikaandrajoni/sakato-smart-monitor
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Ganti 'dikaaj' dengan username Linux kamu bila berbeda.
+User=dikaaj
+WorkingDirectory=/home/dikaaj/sakato-smart-monitor/prototype
+# File .env (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, MQTT_*, VLM_MODEL, ...)
+# dibaca otomatis oleh program via python-dotenv; baris ini sebagai cadangan.
+EnvironmentFile=-/home/dikaaj/sakato-smart-monitor/prototype/.env
+ExecStart=/home/dikaaj/sakato-smart-monitor/prototype/.venv/bin/python \
+    main.py --source 0 \
+    --gallery gallery/ \
+    --telegram \
+    --mqtt \
+    --describe \
+    --camera-name teras_depan \
+    --log-dir /home/dikaaj/sakato-smart-monitor/logs
+Restart=on-failure
+RestartSec=10
+# Batasi restart beruntun bila error terus (mis. kamera dicabut)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,8 @@
-# Fase 3 — MQTT + Home Assistant
+# Fase 5 — VLM deskripsi kejadian + hardening
+
+Pipeline lengkap: deteksi orang (YOLO11) → tracking (ByteTrack) →
+face recognition (InsightFace) → **deskripsi VLM (Ollama)** → Telegram +
+MQTT + JSONL.
 
 Pipeline Fase 2 (YOLO11n + ByteTrack + InsightFace + Telegram) ditambah:
 
@@ -70,16 +74,41 @@ untuk tiap orang. Hasil: `gallery/<nama>/shot_000.jpg`, dst.
 # Tanpa Telegram/MQTT (mode uji)
 python main.py --source 0 --gallery gallery/
 
-# Lengkap: Telegram + MQTT aktif
-python main.py --source 0 --gallery gallery/ --telegram --mqtt --camera-name teras_depan
+# Lengkap: Telegram + MQTT + VLM aktif
+python main.py --source 0 --gallery gallery/ --telegram --mqtt --describe --camera-name teras_depan
 
-# Headless
-python main.py --source 0 --gallery gallery/ --telegram --mqtt --no-show
+# Headless + log harian
+python main.py --source 0 --gallery gallery/ --telegram --mqtt --no-show --log-dir logs/
 ```
 
 Flag tambahan: `--face-threshold` (default 0.6), `--notify-cooldown` (default
 300 dtk), `--mqtt-status-every` (publish status tiap N frame, default 150),
-`--conf`, `--log`.
+`--conf`, `--log` (path eksplisit, tanpa rotasi), `--log-dir` (rotasi harian
+`events-YYYYMMDD.jsonl`), `--describe`, `--vlm-model`.
+
+## Deskripsi VLM (Fase 5, opsional)
+
+```bash
+ollama pull moondream:1.8b   # ±1.7 GB, sekali saja
+# alternatif lebih akurat (lebih berat): ollama pull qwen2.5vl:3b
+```
+
+Dengan `--describe`, event penting (`person_entered` saat armed) dikirim ke
+VLM lokal yang menulis 1-2 kalimat Bahasa Indonesia, mis. "Seorang pria
+berjaket merah berdiri di depan pintu." Deskripsi dikerjakan di **thread
+latar** (pipeline tidak diblokir, timeout 60 dtk), lalu ditempel ke:
+
+- caption Telegram (baris 🔍),
+- payload MQTT (`"description"` di event `face_known`/`face_unknown`),
+- `events.jsonl` (event `face_description`).
+
+Model via env `VLM_MODEL` atau flag `--vlm-model`. Tanpa Ollama → deskripsi
+otomatis nonaktif, program tetap jalan normal.
+
+## Jalan otomatis saat boot (systemd)
+
+Lihat [`../deploy/README.md`](../deploy/README.md) — service
+`sakato-monitor.service`: auto-start, restart on-failure, log harian.
 
 ## Perintah Telegram
 
@@ -147,11 +176,12 @@ Sama seperti Fase 2, plus info wajah di console:
 [face] track #3 -> dika (0.87)
 ```
 
-## Keterbatasan Fase 3
+## Keterbatasan (Fase 5)
 
 - MQTT tanpa TLS/auth secara default — aman untuk jaringan rumah sendiri,
   **aktifkan `password_file` di mosquitto.conf sebelum expose ke internet**
-  (caranya sudah dikomentari di file config).
+  (caranya sudah dikomentari di file config; `mosquitto/config/passwd`
+  sudah di-`.gitignore`).
 - Event `face_known`/`face_unknown` hanya dikirim saat `person_entered`
   (tidak diulang tiap frame) — HA yang butuh "masih ada orang" pakai topik
   `status` (`visible`).
@@ -159,13 +189,15 @@ Sama seperti Fase 2, plus info wajah di console:
   Foto cetak / layar HP wajah terdaftar DAPAT menipu sistem. Jangan jadikan
   satu-satunya kunci akses tanpa faktor kedua.
 - Threshold 0.6 adalah titik awal — sesuaikan dengan pencahayaan rumah.
+- Deskripsi VLM menambah jeda notifikasi (waktu inference, bisa 10-60 dtk di
+  CPU) — notifikasi dikirim setelah deskripsi siap agar caption lengkap.
+- Event Frigate (`frigate/*`) belum masuk pipeline sakato — lihat
+  [`../docs/DEPLOY_FRIGATE.md`](../docs/DEPLOY_FRIGATE.md).
 
-## Rencana Fase 4
+## Rencana lanjutan (di luar Fase 0-5)
 
-1. **Frigate NVR penuh** (gantikan prototype sebagai sumber deteksi
-   multi-kamera): `docker-compose.yml` sudah menyiapkan service-nya.
-2. **VLM lokal** (Moondream2 / Qwen2.5-VL via Ollama) untuk deskripsi kejadian
-   Bahasa Indonesia sebagai verifikator lapis kedua.
-3. **Agent LLM pengelola** — query bahasa natural atas event store, investigasi
-   klip, perintah arm/disarm (lihat `agent/README.md` di root repo).
+1. Penerjemah `frigate/*` → `sakato/monitor/*` agar Frigate jadi sumber
+   deteksi multi-kamera penuh.
+2. Dashboard web custom bila UI Frigate + HA belum cukup.
+3. TLS untuk MQTT + autentikasi penuh sebelum akses dari internet.
 4. Event store SQLite + riwayat klip per event.
