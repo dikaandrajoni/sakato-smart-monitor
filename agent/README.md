@@ -50,6 +50,26 @@ tetap jalan (`ringkasan`, `status`, `cari <nama>`, `arm`, `disarm`,
 `bantuan`) dengan pesan jujur "mode LLM nonaktif". Tidak ada jawaban
 ngawur — itu disengaja.
 
+### Pilih model: penuh vs lite
+
+| Mode | Model | Ukuran | Cocok untuk |
+|------|-------|--------|-------------|
+| Penuh (default) | `qwen2.5:7b` | ±4.7 GB | laptop RAM 8GB+, function calling paling bisa diandalkan |
+| Lite | `qwen2.5:1.5b` | ±1 GB | laptop minim — tanya jawab sederhana masih oke |
+| Super lite | — (tanpa Ollama) | 0 MB | mode fallback: perintah terstruktur saja, tanpa AI |
+
+```bash
+ollama pull qwen2.5:1.5b
+OLLAMA_MODEL=qwen2.5:1.5b python -m agent.agent --chat
+# atau simpan di .env: OLLAMA_MODEL=qwen2.5:1.5b
+```
+
+Jujur soal trade-off: model kecil (0.5b–1.5b) **sering ngaco untuk
+function calling** — kadang lupa panggil tool atau salah format argumen.
+Untuk pertanyaan kritis ("siapa yang masuk tadi malam?"), mode fallback
+tanpa LLM justru lebih bisa dipercaya daripada model 0.5b yang ngarang.
+Rekomendasi: coba 1.5b dulu; kalau jawabannya aneh-aneh, turun ke fallback.
+
 Variabel env (opsional, hormati `.env`):
 
 | Variabel | Default | Keterangan |
