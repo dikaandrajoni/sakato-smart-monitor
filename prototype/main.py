@@ -15,6 +15,12 @@ Tekan 'q' pada jendela video untuk keluar (mode GUI).
 import argparse
 import os
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # baca TELEGRAM_BOT_TOKEN dkk dari file .env bila ada
+except ImportError:
+    pass
+
 import cv2
 
 from camera import CameraSource, parse_source
