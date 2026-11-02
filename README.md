@@ -46,6 +46,23 @@ docker-compose.yml  orkestrasi: mosquitto + frigate + home-assistant + agent
 
 Pengguna Windows: lihat [**docs/PANDUAN_WINDOWS.md**](docs/PANDUAN_WINDOWS.md).
 
+## Jalan satu perintah
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+Menyalakan prototype (deteksi + face + Telegram + MQTT + VLM) dan agent
+(`--bridge`). Mosquitto dicoba distart otomatis. Kustomisasi:
+
+```bash
+SOURCE=rtsp://user:pass@192.168.1.10:554/stream1 ./run.sh
+CAMERA_NAME=teras_belakang ./run.sh
+```
+
+`Ctrl+C` menghentikan semuanya.
+
 ## Panduan instalasi (Linux — teruji di Linux Mint)
 
 ```bash
