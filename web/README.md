@@ -27,10 +27,17 @@ Buka **http://localhost:8080** di browser.
   status, **snapshot frame terakhir** (refresh tiap 3 detik via
   `GET /snapshot/<id>`), 10 event terakhir **kamera itu**, 50 baris log
   terakhir, tombol Start/Stop per kamera. Plus tombol Start semua / Stop semua.
+- **`/live`** — grid **semua kamera sekaligus**: tiap kartu berisi nama
+  kamera, dot status (hijau jalan / abu berhenti), snapshot auto-refresh
+  tiap 3 detik, dan tombol Start/Stop per kartu. Layout responsif:
+  1 kolom (HP), 2 kolom (tablet), 3 kolom (desktop). Bila belum ada kamera,
+  tampil pesan ramah + tautan ke `/config`.
 - **`/config`** — kelola daftar kamera: tambah (ID + sumber + opsi),
   ubah, hapus, tandai kamera aktif. Validasi sama seperti sebelumnya
   (RTSP wajib `rtsp://`, index USB angka, ID unik huruf/angka/_/-).
 
+> Tampilan: tema gelap dengan aksen **biru-emas khas Sakato**
+> (biru `#0F2B5B`/`#1E40AF`, emas `#C9A227`/`#E8B923`).
 > Maksimal wajar **4 kamera aktif bersamaan** — dashboard menampilkan
 > peringatan bila lebih (beban CPU).
 
