@@ -39,3 +39,5 @@ models/
 web/config.json
 web/pipeline.log
 web/*.log
+web/snapshots/
+web/logs/

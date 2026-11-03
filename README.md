@@ -78,7 +78,9 @@ python app.py
 
 Bisa pilih sumber kamera (laptop / USB / RTSP CCTV / file video), nama kamera,
 Telegram / MQTT / VLM, lalu Start/Stop pipeline dan lihat 10 event terakhir +
-log — semua dari web. Detail: [`web/README.md`](web/README.md).
+log — semua dari web. Mendukung **multi-kamera** (tab per kamera, snapshot
+frame terakhir auto-refresh, start/stop per kamera atau sekaligus).
+Detail: [`web/README.md`](web/README.md).
 
 > Tanpa autentikasi — hanya untuk LAN rumah, jangan expose ke internet.
 
