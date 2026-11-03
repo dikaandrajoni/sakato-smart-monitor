@@ -330,6 +330,10 @@ def create_app():
     def config_page():
         return render_template_string(CONFIG_HTML)
 
+    @app.get("/live")
+    def live_page():
+        return render_template_string(LIVE_HTML)
+
     @app.get("/snapshot/<cid>")
     def snapshot(cid):
         if not ID_RE.match(cid):
@@ -488,33 +492,68 @@ app = create_app()
 # ---------- templates ----------
 
 BASE_CSS = """
-body{font-family:system-ui,sans-serif;max-width:1000px;margin:0 auto;padding:16px;background:#111;color:#eee}
-nav{margin-bottom:16px}a{color:#7fd4ff;margin-right:12px}
-.card{background:#1c1c1c;border:1px solid #333;border-radius:8px;padding:16px;margin-bottom:16px}
-.badge{display:inline-block;padding:4px 12px;border-radius:12px;font-weight:bold}
-.on{background:#14532d;color:#86efac}.off{background:#3f3f3f;color:#ccc}
-button{padding:8px 16px;margin:4px;border-radius:6px;border:0;cursor:pointer;font-size:14px}
+:root{--blue:#1E40AF;--blue-dark:#0F2B5B;--gold:#E8B923;--gold-dim:#C9A227;--bg:#0d1526;--panel:#152036;--line:#24304d;--txt:#e8ecf4;--mut:#93a0b8}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;max-width:1100px;margin:0 auto;padding:16px;background:var(--bg);color:var(--txt);line-height:1.5}
+nav{margin-bottom:20px;padding:12px 4px;border-bottom:2px solid var(--blue-dark)}
+nav a{color:#9fc0ff;margin-right:18px;text-decoration:none;font-weight:600}
+nav a:hover,nav a.active{color:var(--gold)}
+h1{color:#fff;font-size:28px;margin:4px 0 18px}
+h1 .accent{color:var(--gold)}
+h3{color:#fff;margin:0 0 12px}h4{color:#dfe6f3;margin:18px 0 8px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:16px;box-shadow:0 4px 16px rgba(0,0,0,.35)}
+.badge{display:inline-block;padding:4px 14px;border-radius:999px;font-weight:700;font-size:13px}
+.on{background:#14532d;color:#86efac;border:1px solid #1f7a3f}
+.off{background:#2a2f3a;color:#aab4c8;border:1px solid #3a4152}
+button{padding:8px 16px;margin:4px;border-radius:8px;border:0;cursor:pointer;font-size:14px;font-weight:600}
+button:hover{filter:brightness(1.12)}
 .start{background:#16a34a;color:#fff}.stop{background:#dc2626;color:#fff}
-.save{background:#2563eb;color:#fff}.del{background:#7f1d1d;color:#fff}
+.save{background:linear-gradient(135deg,var(--blue),var(--blue-dark));color:#fff;border:1px solid var(--gold-dim)}
+.del{background:#7f1d1d;color:#fff}
+.ghost{background:#222c44;color:#cdd6ea;border:1px solid var(--line)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-th,td{border-bottom:1px solid #333;padding:6px;text-align:left}
-pre{background:#000;padding:12px;border-radius:6px;max-height:260px;overflow:auto;font-size:12px;white-space:pre-wrap}
-label{display:block;margin:10px 0 4px}input,select{padding:8px;width:100%;max-width:420px;background:#222;color:#eee;border:1px solid #444;border-radius:6px}
+thead th{background:#0f1a30;color:var(--gold);text-transform:uppercase;font-size:11px;letter-spacing:.06em}
+th,td{border-bottom:1px solid var(--line);padding:8px 10px;text-align:left}
+tbody tr:nth-child(even){background:rgba(255,255,255,.02)}
+tbody tr:hover{background:rgba(232,185,35,.05)}
+table button{padding:6px 10px;font-size:12px;white-space:nowrap}
+td:last-child{white-space:nowrap}
+pre{background:#0a0f1c;padding:12px;border-radius:8px;border:1px solid var(--line);max-height:260px;overflow:auto;font-size:12px;white-space:pre-wrap;color:#c8d2e6}
+code{color:var(--gold)}
+label{display:block;margin:12px 0 4px;font-weight:600;color:#dfe6f3}
+input,select{padding:9px 10px;width:100%;max-width:440px;background:#0f1830;color:var(--txt);border:1px solid #33405f;border-radius:8px}
+input:focus,select:focus{outline:none;border-color:var(--gold)}
 input[type=checkbox]{width:auto;transform:scale(1.3);margin-right:8px}
-.tabs{margin-bottom:12px}.tab{padding:8px 16px;margin:2px;border-radius:6px 6px 0 0;background:#222;color:#aaa;border:1px solid #333;border-bottom:0;cursor:pointer}
-.tab.active{background:#1c1c1c;color:#fff;font-weight:bold}
-.tab .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
-.dot.on{background:#4ade80}.dot.off{background:#666}
-img.snap{width:100%;max-width:640px;border-radius:6px;border:1px solid #333;background:#000;min-height:120px}
+.tabs{margin-bottom:0;display:flex;flex-wrap:wrap}
+.tab{padding:8px 16px;margin:2px;border-radius:10px 10px 0 0;background:#101a30;color:#9fb0cc;border:1px solid var(--line);border-bottom:0;cursor:pointer}
+.tab.active{background:var(--panel);color:#fff;font-weight:700;border-top:2px solid var(--gold)}
+.tab .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px}
+.dot.on{background:#4ade80;box-shadow:0 0 6px #4ade80}.dot.off{background:#5b6478}
+img.snap{width:100%;border-radius:8px;border:1px solid var(--line);background:#000;min-height:120px;display:block}
 .cond{display:none}.err{color:#f87171}.ok{color:#86efac}
+.muted{color:var(--mut);font-size:13px}
+.grid{display:grid;gap:16px;grid-template-columns:1fr;margin-bottom:16px}
+@media(min-width:640px){.grid{grid-template-columns:1fr 1fr}}
+@media(min-width:1024px){.grid{grid-template-columns:1fr 1fr 1fr}}
+.livecard{padding:0;overflow:hidden}
+.livecard .snapwrap{position:relative;background:#000}
+.livecard .head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.livecard .head .nm{font-weight:700;color:#fff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.livecard .body{padding:12px 16px}
+.livecard .actions{display:flex;gap:8px;margin-top:10px}
+.empty{text-align:center;padding:48px 20px;color:var(--mut)}
+.empty a{color:var(--gold);font-weight:700}
+.livecard img.snap{border:0;border-radius:0;min-height:140px}
+.brandbar{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+.brandbar .logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--blue),var(--blue-dark));border:1px solid var(--gold-dim);display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--gold);font-weight:800}
 """
 
 DASHBOARD_HTML = """<!doctype html><html lang="id"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sakato Smart Monitor</title><style>""" + BASE_CSS + """</style></head>
 <body>
-<nav><a href="/">Dashboard</a><a href="/config">Konfigurasi</a></nav>
-<h1>Sakato Smart Monitor</h1>
+<nav><a href="/" class="active">Dashboard</a><a href="/live">Live</a><a href="/config">Konfigurasi</a></nav>
+<div class="brandbar"><div class="logo">S</div><h1 style="margin:0">Sakato <span class="accent">Smart Monitor</span></h1></div>
 <div class="card">
   <button class="start" onclick="actAll('start-all')">▶ Start semua</button>
   <button class="stop" onclick="actAll('stop-all')">⏹ Stop semua</button>
@@ -577,8 +616,8 @@ CONFIG_HTML = """<!doctype html><html lang="id"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Konfigurasi — Sakato Smart Monitor</title><style>""" + BASE_CSS + """</style></head>
 <body>
-<nav><a href="/">Dashboard</a><a href="/config">Konfigurasi</a></nav>
-<h1>Konfigurasi kamera</h1>
+<nav><a href="/">Dashboard</a><a href="/live">Live</a><a href="/config" class="active">Konfigurasi</a></nav>
+<div class="brandbar"><div class="logo">S</div><h1 style="margin:0">Konfigurasi <span class="accent">kamera</span></h1></div>
 <div class="card"><h3>Daftar kamera</h3><table>
 <thead><tr><th>ID</th><th>Nama</th><th>Sumber</th><th>Aksi</th></tr></thead>
 <tbody id="camlist"></tbody></table></div>
@@ -673,6 +712,57 @@ async function save(){
   else showMsg('❌ '+j.errors.join('; '),false);
 }
 resetForm();load();
+</script></body></html>"""
+
+LIVE_HTML = """<!doctype html><html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Live — Sakato Smart Monitor</title><style>""" + BASE_CSS + """</style></head>
+<body>
+<nav><a href="/">Dashboard</a><a href="/live" class="active">Live</a><a href="/config">Konfigurasi</a></nav>
+<div class="brandbar"><div class="logo">S</div><h1 style="margin:0">Live <span class="accent">semua kamera</span></h1></div>
+<p id="msg"></p>
+<div id="wrap"></div>
+<script>
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+async function act(id,a){
+  const r=await fetch('/api/cameras/'+id+'/'+a,{method:'POST'});
+  const j=await r.json();
+  const m=document.getElementById('msg');
+  m.textContent=j.message;m.className=j.ok?'ok':'err';
+  refresh();
+}
+function card(c){
+  const t=Date.now();
+  return '<div class="card livecard">'
+    +'<div class="head"><span class="dot '+(c.running?'on':'off')+'"></span>'
+    +'<span class="nm">'+esc(c.camera_name)+'</span>'
+    +'<span class="badge '+(c.running?'on':'off')+'">'+(c.running?'JALAN':'BERHENTI')+'</span></div>'
+    +'<div class="snapwrap"><img class="snap" data-snap="'+c.id+'" src="/snapshot/'+c.id+'?t='+t+'" alt="belum ada snapshot"></div>'
+    +'<div class="body"><span class="muted">ID: <code>'+esc(c.id)+'</code> · '+(c.running?'snapshot refresh tiap 3 detik':'pipeline berhenti')+'</span>'
+    +'<div class="actions">'
+    +(c.running
+      ?'<button class="stop" onclick="act(\\''+c.id+'\\',\\'stop\\')">⏹ Stop</button>'
+      :'<button class="start" onclick="act(\\''+c.id+'\\',\\'start\\')">▶ Start</button>')
+    +'</div></div></div>';
+}
+async function refresh(){
+  const r=await fetch('/api/status');const s=await r.json();
+  const w=document.getElementById('wrap');
+  if(!s.cameras.length){
+    w.innerHTML='<div class="card empty"><h3>Belum ada kamera</h3>'
+      +'<p>Tambahkan kamera dulu di halaman konfigurasi.</p>'
+      +'<a href="/config">→ Buka Konfigurasi</a></div>';
+    return;
+  }
+  w.innerHTML='<div class="grid">'+s.cameras.map(card).join('')+'</div>'
+    +'<p class="muted">'+s.running_count+' dari '+s.cameras.length+' kamera berjalan</p>';
+}
+function tickSnap(){
+  document.querySelectorAll('img[data-snap]').forEach(img=>{
+    img.src='/snapshot/'+img.dataset.snap+'?t='+Date.now();
+  });
+}
+setInterval(refresh,8000);setInterval(tickSnap,3000);refresh();
 </script></body></html>"""
 
 if __name__ == "__main__":
